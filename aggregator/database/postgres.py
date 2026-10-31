@@ -1,26 +1,4 @@
-"""
-aggregator/database/postgres.py — PostgreSQL connection helpers for the aggregation layer.
-
-Provides a lightweight connection pool using psycopg (v3) and loads
-credentials from the same .env file consumed by scripts/db.py.
-
-Design decisions:
-  - Uses psycopg.ConnectionPool (connection pool) for safe reuse across the
-    sync worker and potential future concurrent reads.
-  - Pool is created lazily on the first call to ``get_pg_connection()`` and
-    is a module-level singleton.
-  - A plain context-managed connection is returned; callers are responsible
-    for committing / rolling back and closing (returning to pool).
-
-Usage::
-
-    from aggregator.database.postgres import get_pg_connection
-
-    with get_pg_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute("SELECT now()")
-            row = cur.fetchone()
-"""
+"""PostgreSQL connection helpers for the aggregation layer."""
 
 from __future__ import annotations
 
@@ -30,55 +8,46 @@ from contextlib import contextmanager
 from typing import Generator
 
 import psycopg
+from psycopg.conninfo import make_conninfo
 from psycopg_pool import ConnectionPool  # type: ignore[import]
 
 from aggregator.config import settings
 
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# Module-level pool singleton
-# ---------------------------------------------------------------------------
-
 _pool: ConnectionPool | None = None
 _pool_lock = threading.Lock()
-
 _MIN_POOL_SIZE = 1
-_MAX_POOL_SIZE = 5   # Hackathon: keep footprint small
+_MAX_POOL_SIZE = 5
 
 
 def _build_pool() -> ConnectionPool:
-    """Construct and open the psycopg connection pool.
-
-    Returns:
-        An open ``psycopg_pool.ConnectionPool`` instance.
-    """
-    conninfo = settings.pg_conninfo()
+    """Construct and open the central PostgreSQL connection pool."""
+    conninfo = make_conninfo(
+        dbname=settings.db_name,
+        user=settings.db_user,
+        password=settings.db_password or None,
+        host=settings.db_host,
+        port=settings.db_port,
+    )
     logger.info(
-        "Creating PostgreSQL connection pool (min=%d, max=%d) → %s:%s/%s",
+        "Creating PostgreSQL connection pool (min=%d, max=%d) -> %s:%s/%s",
         _MIN_POOL_SIZE,
         _MAX_POOL_SIZE,
         settings.db_host,
         settings.db_port,
         settings.db_name,
     )
-    pool = ConnectionPool(
+    return ConnectionPool(
         conninfo=conninfo,
         min_size=_MIN_POOL_SIZE,
         max_size=_MAX_POOL_SIZE,
         open=True,
     )
-    return pool
 
 
 def get_pool() -> ConnectionPool:
-    """Return (and lazily create) the module-level connection pool.
-
-    Thread-safe: uses a double-checked lock.
-
-    Returns:
-        The shared ``ConnectionPool`` instance.
-    """
+    """Return the lazily-created central PostgreSQL connection pool."""
     global _pool  # noqa: PLW0603
     if _pool is None:
         with _pool_lock:
@@ -89,31 +58,13 @@ def get_pool() -> ConnectionPool:
 
 @contextmanager
 def get_pg_connection() -> Generator[psycopg.Connection, None, None]:
-    """Yield a PostgreSQL connection from the shared pool.
-
-    The connection is returned to the pool automatically when the
-    ``with`` block exits, whether normally or via an exception.
-
-    Yields:
-        A ``psycopg.Connection`` object.  Callers must not close it
-        manually; the pool manages its lifecycle.
-
-    Example::
-
-        with get_pg_connection() as conn:
-            rows = conn.execute("SELECT id FROM orders LIMIT 5").fetchall()
-    """
-    pool = get_pool()
-    with pool.connection() as conn:
+    """Yield a connection to the central control-plane database."""
+    with get_pool().connection() as conn:
         yield conn
 
 
 def close_pool() -> None:
-    """Close the connection pool and release all connections.
-
-    Should be called during application shutdown (FastAPI lifespan teardown).
-    Safe to call even if the pool was never initialised.
-    """
+    """Close the central PostgreSQL connection pool if it is open."""
     global _pool  # noqa: PLW0603
     if _pool is not None:
         logger.info("Closing PostgreSQL connection pool.")
@@ -123,40 +74,42 @@ def close_pool() -> None:
 
 @contextmanager
 def get_tenant_pg_connection(tenant_id: int) -> Generator[psycopg.Connection, None, None]:
-    """Return a direct connection to a specific tenant's dedicated PostgreSQL database.
-
-    Connects to ``cyberforge_tenant_{tenant_id}`` directly, establishing
-    database-level physical isolation at the source transactional tier.
-    """
-    base_info = f"host={settings.db_host} port={settings.db_port} user={settings.db_user} password={settings.db_password}"
-    db_name = f"cyberforge_tenant_{tenant_id}"
-    conn_str = f"{base_info} dbname={db_name}"
-    with psycopg.connect(conn_str) as conn:
+    """Yield a connection to one dedicated tenant PostgreSQL database."""
+    conninfo = make_conninfo(
+        dbname=f"cyberforge_tenant_{tenant_id}",
+        user=settings.db_user,
+        password=settings.db_password or None,
+        host=settings.db_host,
+        port=settings.db_port,
+    )
+    with psycopg.connect(conninfo) as conn:
         yield conn
 
 
-
 def pg_order_count_estimate() -> int:
-    """Return a fast (non-locking) approximate row count for ``orders`` across
-    all tenant PostgreSQL databases (``cyberforge_tenant_1`` through
-    ``cyberforge_tenant_10``).
+    """Return the approximate total order count across tenant databases."""
+    try:
+        with get_pg_connection() as conn:
+            tenant_ids = [
+                int(row[0])
+                for row in conn.execute("SELECT id FROM tenants ORDER BY id").fetchall()
+            ]
+    except Exception as exc:
+        logger.warning("Could not discover tenant IDs for health estimate: %s", exc)
+        return 0
 
-    Uses ``pg_class.reltuples`` in each tenant database, which is updated by
-    ANALYZE and AUTOVACUUM.  The estimate may lag by minutes but completes in
-    microseconds per database.
-
-    Returns:
-        Approximate total number of orders across all tenant databases, or 0
-        on error.
-    """
     total = 0
-    for tenant_id in range(1, 11):
+    for tenant_id in tenant_ids:
         try:
             with get_tenant_pg_connection(tenant_id) as conn:
                 row = conn.execute(
                     "SELECT reltuples::bigint FROM pg_class WHERE relname = 'orders'"
                 ).fetchone()
                 total += int(row[0]) if row and row[0] is not None else 0
-        except Exception:
-            pass  # Tenant DB may not exist yet; skip silently
+        except Exception as exc:
+            logger.warning(
+                "Could not estimate orders for tenant database #%d: %s",
+                tenant_id,
+                exc,
+            )
     return total

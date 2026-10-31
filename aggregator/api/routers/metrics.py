@@ -30,14 +30,13 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from aggregator.api.dependencies import (
     check_rate_limit,
-    get_duckdb,
     get_tenant_db,
     get_sync_worker,
     require_ready,
 )
 from pathlib import Path
 import yaml
-from aggregator.database.duckdb_store import DUCKDB_WRITE_LOCK
+from aggregator.database.duckdb_store import get_tenant_write_lock
 from aggregator.models.schemas import (
     CustomMetricConfigItem,
     CustomMetricResponse,
@@ -150,7 +149,7 @@ def get_summary(
     fd = _parse_date(from_date, _default_from_date())
     td = _parse_date(to_date, _default_to_date())
 
-    with DUCKDB_WRITE_LOCK:
+    with get_tenant_write_lock(tenant_id):
         row = conn.execute(
             """
             SELECT
@@ -231,7 +230,7 @@ def get_trend(
     trunc_unit = "hour" if interval == "hour" else "day"
     fmt = "%Y-%m-%dT%H:00:00" if interval == "hour" else "%Y-%m-%d"
 
-    with DUCKDB_WRITE_LOCK:
+    with get_tenant_write_lock(tenant_id):
         rows = conn.execute(
             f"""
             SELECT
@@ -307,7 +306,7 @@ def get_top_products(
     fd = _parse_date(from_date, _default_from_date())
     td = _parse_date(to_date, _default_to_date())
 
-    with DUCKDB_WRITE_LOCK:
+    with get_tenant_write_lock(tenant_id):
         rows = conn.execute(
             """
             SELECT
@@ -390,7 +389,7 @@ def get_status_breakdown(
     fd = _parse_date(from_date, _default_from_date())
     td = _parse_date(to_date, _default_to_date())
 
-    with DUCKDB_WRITE_LOCK:
+    with get_tenant_write_lock(tenant_id):
         rows = conn.execute(
             """
             SELECT 'delivered' AS status, COALESCE(SUM(delivered_count), 0) AS count, COALESCE(SUM(delivered_revenue), 0.0) AS revenue
@@ -490,10 +489,14 @@ def get_custom_metric(
     fd = _parse_date(from_date, _default_from_date())
     td = _parse_date(to_date, _default_to_date())
 
-    with DUCKDB_WRITE_LOCK:
+    with get_tenant_write_lock(tenant_id):
         row = conn.execute(
-            f"SELECT COALESCE({expr}, 0.0) FROM hourly_tenant_metrics WHERE period >= ? AND period <= ?",
-            [fd, td],
+            f"""
+            SELECT COALESCE({expr}, 0.0)
+            FROM hourly_tenant_metrics
+            WHERE tenant_id = ? AND period >= ? AND period <= ?
+            """,
+            [tenant_id, fd, td],
         ).fetchone()
 
     val = float(row[0]) if row and row[0] is not None else 0.0
@@ -511,4 +514,3 @@ def get_custom_metric(
         data_freshness_seconds=freshness_secs,
         last_synced_at=last_synced,
     )
-

@@ -50,11 +50,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Manage startup and shutdown of stateful resources.
 
     Startup sequence:
-        1. Open DuckDB connection and create schema (idempotent).
-        2. Register DuckDB connection with the dependency layer.
-        3. Create and start SyncWorker daemon thread.
-        4. Register SyncWorker with the dependency layer.
-        5. Block (with a short poll) until the initial sync marks ``is_ready``.
+        1. Create and start the per-tenant SyncWorker daemon thread.
+        2. Register SyncWorker with the dependency layer.
+        3. Block (with a short poll) until the initial sync marks ``is_ready``.
 
     Shutdown sequence:
         1. Stop SyncWorker (signals the daemon thread and waits).
@@ -65,7 +63,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """
     logger.info("=== CyberForge Aggregation Layer — starting up ===")
 
-    # 1. Create and start sync worker (no global DuckDB — each tenant has its own)
+    # Create and start the per-tenant sync worker.
     worker = SyncWorker()
     set_sync_worker(worker)
     worker.start()

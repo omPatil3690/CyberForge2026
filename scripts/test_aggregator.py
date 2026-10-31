@@ -71,15 +71,18 @@ def run_tests():
         print(f"   -> Total Revenue  : ${summary['total_revenue']:,.2f}")
         print(f"   -> Avg Order Value: ${summary['avg_order_value']:,.2f}")
 
-        # Exact numerical verification against PostgreSQL
-        with get_pg_connection() as pg_conn:
-            pg_row = pg_conn.execute(
-                "SELECT count(*), coalesce(sum(total_amount), 0.0) FROM orders WHERE created_at >= %s AND created_at <= %s",
-                [summary["from_date"], summary["to_date"]],
-            ).fetchone()
-        assert pg_row is not None
-        pg_orders = int(pg_row[0])
-        pg_revenue = float(pg_row[1])
+        # Exact numerical verification against the dedicated source databases.
+        pg_orders = 0
+        pg_revenue = 0.0
+        for tenant_id in summary["stores"]:
+            with get_tenant_pg_connection(tenant_id) as pg_conn:
+                pg_row = pg_conn.execute(
+                    "SELECT count(*), coalesce(sum(total_amount), 0.0) FROM orders "
+                    "WHERE created_at >= %s AND created_at <= %s",
+                    [summary["from_date"], summary["to_date"]],
+                ).fetchone()
+            pg_orders += int(pg_row[0])
+            pg_revenue += float(pg_row[1])
         assert summary["order_count"] == pg_orders, \
             f"FR-1 order count mismatch: API={summary['order_count']}, PG={pg_orders}"
         assert abs(summary["total_revenue"] - pg_revenue) < 0.02, \
@@ -91,7 +94,11 @@ def run_tests():
         # 3. FR-2 Company Owner Daily Trend (All 10 Stores / 31 Days)
         # -------------------------------------------------------------
         print("\n3. Testing FR-2: Company Owner Daily Trend (Aggregated Across All 10 Stores)...")
-        url_comp_trend = "/companies/1/metrics/trend?interval=day"
+        url_comp_trend = (
+            "/companies/1/metrics/trend?interval=day"
+            "&from_date=2026-01-01T00:00:00%2B00:00"
+            "&to_date=2026-12-31T23:59:59%2B00:00"
+        )
         client.get(url_comp_trend)  # Warmup
         t0 = time.perf_counter()
         r = client.get(url_comp_trend)
@@ -104,22 +111,33 @@ def run_tests():
 
         # Exact match: total orders across all trend buckets == FR-1 count
         api_trend_total = sum(d["order_count"] for d in trend["data"])
-        # Compare trend total against PostgreSQL (no date filter = last 30 days by default)
-        with get_pg_connection() as pg_conn:
-            pg_trend_rows = pg_conn.execute(
-                "SELECT date_trunc('day', created_at) as p, count(*) FROM orders GROUP BY p"
-            ).fetchall()
-        pg_trend_by_day = {str(r[0].date()): int(r[1]) for r in pg_trend_rows}
+        # Compare against the same date window in every dedicated source DB.
+        pg_trend_by_day = {}
+        pg_revenue_by_day = {}
+        for tenant_id in trend["stores"]:
+            with get_tenant_pg_connection(tenant_id) as pg_conn:
+                pg_trend_rows = pg_conn.execute(
+                    "SELECT date_trunc('day', created_at) AS period, count(*), "
+                    "coalesce(sum(total_amount), 0.0) FROM orders "
+                    "WHERE created_at >= %s AND created_at <= %s GROUP BY period",
+                    ["2026-01-01T00:00:00+00:00", "2026-12-31T23:59:59+00:00"],
+                ).fetchall() if trend["data"] else []
+            for row in pg_trend_rows:
+                day = str(row[0].date())
+                pg_trend_by_day[day] = pg_trend_by_day.get(day, 0) + int(row[1])
+                pg_revenue_by_day[day] = pg_revenue_by_day.get(day, 0.0) + float(row[2])
         api_trend_by_day = {d["period"][:10]: d["order_count"] for d in trend["data"]}
+        api_revenue_by_day = {d["period"][:10]: d["revenue"] for d in trend["data"]}
         mismatches = {
-            day: (api_trend_by_day.get(day, 0), pg_trend_by_day[day])
+            day: (api_trend_by_day.get(day, 0), pg_trend_by_day.get(day, 0))
             for day in api_trend_by_day
-            if abs(api_trend_by_day.get(day, 0) - pg_trend_by_day.get(day, 0)) > 0
+            if api_trend_by_day.get(day, 0) != pg_trend_by_day.get(day, 0)
+            or abs(api_revenue_by_day.get(day, 0.0) - pg_revenue_by_day.get(day, 0.0)) >= 0.02
         }
-        if mismatches:
-            print(f"   -> WARNING: {len(mismatches)} day(s) with count mismatch: {list(mismatches.items())[:3]}")
-        else:
-            print(f"   -> Correctness    : EXACT MATCH across all {len(api_trend_by_day)} days vs PostgreSQL")
+        assert not mismatches, (
+            f"FR-2 trend count mismatches: {list(mismatches.items())[:3]}"
+        )
+        print(f"   -> Correctness    : EXACT MATCH across all {len(api_trend_by_day)} days vs PostgreSQL")
         latest = trend['data'][-1]
         print(f"   -> Latest Day     : {latest['period']} -> {latest['order_count']:,} orders (${latest['revenue']:,.2f})")
 
@@ -128,26 +146,48 @@ def run_tests():
         # -------------------------------------------------------------
         print("\n4. Testing FR-3: Company Owner Top-10 Products (Across Entire Store Network)...")
         t0 = time.perf_counter()
-        r = client.get("/companies/1/metrics/top-products?limit=10")
+        r = client.get(
+            "/companies/1/metrics/top-products?limit=10"
+            "&from_date=2026-01-01T00:00:00%2B00:00"
+            "&to_date=2026-12-31T23:59:59%2B00:00"
+        )
         lat_ms = (time.perf_counter() - t0) * 1000
         assert r.status_code == 200, f"FR-3 got HTTP {r.status_code}: {r.text}"
         top_prods = r.json()
         print(f"   -> Latency        : {lat_ms:.2f} ms  [Target: < 200 ms]")
         assert len(top_prods["data"]) > 0, "FR-3: no products returned"
 
-        # Exact verification: top product by revenue must match PostgreSQL
-        with get_pg_connection() as pg_conn:
-            pg_top = pg_conn.execute(
-                """SELECT p.name, SUM(oi.total_price) AS rev
-                   FROM order_items oi JOIN products p ON oi.product_id = p.id
-                   GROUP BY p.name ORDER BY rev DESC LIMIT 1"""
-            ).fetchone()
+        # Exact verification: aggregate product results across dedicated sources.
+        pg_products = {}
+        for tenant_id in top_prods["stores"]:
+            with get_tenant_pg_connection(tenant_id) as pg_conn:
+                pg_rows = pg_conn.execute(
+                    """SELECT p.name, p.category, SUM(oi.quantity), SUM(oi.total_price)
+                       FROM order_items oi JOIN products p ON oi.product_id = p.id
+                       GROUP BY p.name, p.category"""
+                ).fetchall()
+            for row in pg_rows:
+                key = (str(row[0]), str(row[1]))
+                entry = pg_products.setdefault(key, [0, 0.0])
+                entry[0] += int(row[2])
+                entry[1] += float(row[3])
+        pg_top = sorted(pg_products.items(), key=lambda item: item[1][1], reverse=True)[0]
         if pg_top and top_prods["data"]:
             api_top = top_prods["data"][0]
             api_rev = api_top["total_revenue"]
-            pg_rev = float(pg_top[1])
+            assert (api_top["name"], api_top["category"]) == pg_top[0], (
+                f"FR-3 top product mismatch: API={(api_top['name'], api_top['category'])!r}, "
+                f"PG={pg_top[0]!r}"
+            )
+            assert api_top["total_quantity"] == pg_top[1][0], (
+                f"FR-3 top product quantity mismatch: API={api_top['total_quantity']}, PG={pg_top[1][0]}"
+            )
+            pg_rev = pg_top[1][1]
             rev_match = abs(api_rev - pg_rev) < 1.0  # allow $1 float rounding
-            print(f"   -> Correctness    : Top product '{api_top['name']}' API=${api_rev:,.2f} vs PG=${pg_rev:,.2f} -> {'MATCH' if rev_match else 'MISMATCH'}")
+            assert rev_match, (
+                f"FR-3 top product revenue mismatch: API={api_rev}, PG={pg_rev}"
+            )
+            print(f"   -> Correctness    : Top product '{api_top['name']}' API=${api_rev:,.2f} vs PG=${pg_rev:,.2f} -> MATCH")
         for item in top_prods['data'][:5]:
             print(f"   -> #{item['rank']} [{item['category']}] {item['name']} — {item['total_quantity']:,} sold (${item['total_revenue']:,.2f})")
 
@@ -156,28 +196,41 @@ def run_tests():
         # -------------------------------------------------------------
         print("\n5. Testing FR-4: Company Owner Status Breakdown (All 1,000,000 Orders)...")
         t0 = time.perf_counter()
-        r = client.get("/companies/1/metrics/breakdown/status")
+        r = client.get(
+            "/companies/1/metrics/breakdown/status"
+            "?from_date=2026-01-01T00:00:00%2B00:00"
+            "&to_date=2026-12-31T23:59:59%2B00:00"
+        )
         lat_ms = (time.perf_counter() - t0) * 1000
         assert r.status_code == 200, f"FR-4 got HTTP {r.status_code}: {r.text}"
         breakdown = r.json()
         print(f"   -> Latency        : {lat_ms:.2f} ms  [Target: < 200 ms]")
         assert len(breakdown["data"]) == 4, f"FR-4: expected 4 statuses, got {len(breakdown['data'])}"
 
-        # Exact per-status count verification against PostgreSQL
-        with get_pg_connection() as pg_conn:
-            pg_status = {
-                row[0]: int(row[1])
-                for row in pg_conn.execute(
-                    "SELECT status, count(*) FROM orders GROUP BY status"
+        # Exact per-status verification across dedicated source databases.
+        pg_status = {}
+        pg_status_revenue = {}
+        for tenant_id in breakdown["stores"]:
+            with get_tenant_pg_connection(tenant_id) as pg_conn:
+                rows = pg_conn.execute(
+                    "SELECT status, count(*), coalesce(sum(total_amount), 0.0) "
+                    "FROM orders GROUP BY status"
                 ).fetchall()
-            }
+            for row in rows:
+                pg_status[row[0]] = pg_status.get(row[0], 0) + int(row[1])
+                pg_status_revenue[row[0]] = pg_status_revenue.get(row[0], 0.0) + float(row[2])
         api_status = {item["status"]: item["count"] for item in breakdown["data"]}
         all_match = all(api_status.get(st, 0) == pg_status.get(st, 0) for st in pg_status)
         for item in breakdown['data']:
             pg_cnt = pg_status.get(item["status"], 0)
-            match = "✓" if item["count"] == pg_cnt else f"✗ PG={pg_cnt}"
+            match = "MATCH" if item["count"] == pg_cnt else f"MISMATCH PG={pg_cnt}"
             print(f"   -> {item['status']:<12}: {item['count']:>7,} orders ({item['percentage']:>5.1f}%) ${item['revenue']:,.2f}  {match}")
         assert all_match, f"FR-4: status count mismatches: API={api_status} vs PG={pg_status}"
+        for item in breakdown["data"]:
+            assert abs(item["revenue"] - pg_status_revenue.get(item["status"], 0.0)) < 0.02, (
+                f"FR-4 revenue mismatch for {item['status']}: "
+                f"API={item['revenue']}, PG={pg_status_revenue.get(item['status'], 0.0)}"
+            )
         print(f"   -> Correctness    : EXACT MATCH across all 4 statuses vs PostgreSQL")
 
         # -------------------------------------------------------------
@@ -190,16 +243,20 @@ def run_tests():
         print(f"   -> Store #2 (cyberforge_tenant_2 -> tenant_2.duckdb): {r_s2['order_count']:,} orders | ${r_s2['total_revenue']:,.2f}")
         assert r_s1['order_count'] != r_s2['order_count'], "Isolation failure: store counts must differ"
 
-        # Verify no tenant-2 data exists in tenant-1's DuckDB file
-        from aggregator.database.duckdb_store import get_tenant_duckdb, DUCKDB_WRITE_LOCK
-        t1_conn = get_tenant_duckdb(1)
-        with DUCKDB_WRITE_LOCK:
-            cross_leak = t1_conn.execute(
-                "SELECT COUNT(*) FROM orders WHERE tenant_id != 1"
-            ).fetchone()[0]
-        assert cross_leak == 0, \
-            f"ISOLATION BREACH: tenant_1.duckdb contains {cross_leak} orders with tenant_id != 1"
-        print("   -> Physical Air-Gap PASSED: tenant_1.duckdb contains ONLY tenant_id=1 rows.")
+        # Verify every tenant replica contains only its own tenant rows.
+        from aggregator.database.duckdb_store import get_tenant_duckdb, get_tenant_write_lock
+        for tenant_id in range(1, 11):
+            tenant_conn = get_tenant_duckdb(tenant_id)
+            with get_tenant_write_lock(tenant_id):
+                cross_leak = tenant_conn.execute(
+                    "SELECT COUNT(*) FROM orders WHERE tenant_id != ?",
+                    [tenant_id],
+                ).fetchone()[0]
+            assert cross_leak == 0, (
+                f"ISOLATION BREACH: tenant_{tenant_id}.duckdb contains "
+                f"{cross_leak} rows from another tenant"
+            )
+        print("   -> Physical Air-Gap PASSED: every tenant DuckDB contains only its own rows.")
         print("   -> Every tenant runs on dedicated, physically isolated database files.")
 
         # -------------------------------------------------------------
@@ -213,30 +270,16 @@ def run_tests():
         print("   -> Injecting new live order into Store #1 in PostgreSQL (central & tenant DBs)...")
         t_inject_start = time.time()
 
-        # Insert into central PostgreSQL
-        with get_pg_connection() as pg_conn:
-            pg_conn.execute("DELETE FROM orders WHERE id = %s", [test_order_id])
-            pg_conn.execute(
+        # Insert into tenant_1 dedicated PostgreSQL database
+        with get_tenant_pg_connection(1) as t1_conn:
+            t1_conn.execute("DELETE FROM orders WHERE id = %s", [test_order_id])
+            t1_conn.execute(
                 """
                 INSERT INTO orders (id, tenant_id, customer_id, status, total_amount, created_at, updated_at)
                 VALUES (%s, 1, 1, 'placed', 8888.88, %s, %s)
                 """,
                 [test_order_id, now_utc, now_utc],
             )
-
-        # Insert into tenant_1 dedicated PostgreSQL database
-        try:
-            with get_tenant_pg_connection(1) as t1_conn:
-                t1_conn.execute("DELETE FROM orders WHERE id = %s", [test_order_id])
-                t1_conn.execute(
-                    """
-                    INSERT INTO orders (id, tenant_id, customer_id, status, total_amount, created_at, updated_at)
-                    VALUES (%s, 1, 1, 'placed', 8888.88, %s, %s)
-                    """,
-                    [test_order_id, now_utc, now_utc],
-                )
-        except Exception as e:
-            print(f"   -> Note: tenant_1 PG insert skipped ({e})")
 
         print("   -> Polling Company Owner dashboard for real-time reflection...")
         observed_lag = None
@@ -251,16 +294,11 @@ def run_tests():
             print(f"   -> Measured Order Freshness: {observed_lag:.2f} seconds")
             print(f"   -> Target: < 30 seconds -> STATUS: [GREAT] ({observed_lag:.2f}s < 30s)")
         else:
-            print("   -> Order queued for next sync cycle (freshness < 5.0 seconds).")
+            raise AssertionError("FR-6 freshness target was not observed within 6 seconds")
 
-        # Cleanup — remove test order from BOTH central PG and tenant_1 PG
-        with get_pg_connection() as pg_conn:
-            pg_conn.execute("DELETE FROM orders WHERE id = %s", [test_order_id])
-        try:
-            with get_tenant_pg_connection(1) as t1_conn:
-                t1_conn.execute("DELETE FROM orders WHERE id = %s", [test_order_id])
-        except Exception:
-            pass  # Tenant DB cleanup is best-effort; central cleanup always runs
+        # Cleanup — remove the test order from the dedicated source database.
+        with get_tenant_pg_connection(1) as t1_conn:
+            t1_conn.execute("DELETE FROM orders WHERE id = %s", [test_order_id])
 
         # -------------------------------------------------------------
         # 8. Single Store Drill-Down (Store #1)
@@ -280,6 +318,10 @@ def run_tests():
                 t1_pg_count = int(t1_pg.execute("SELECT count(*) FROM orders").fetchone()[0])
             diff = abs(s1_data["order_count"] - t1_pg_count)
             print(f"   -> Correctness    : DuckDB={s1_data['order_count']:,} vs tenant_1 PG={t1_pg_count:,} -> {'MATCH' if diff == 0 else f'DIFF={diff}'}")
+            assert diff == 0, (
+                f"Store #1 replica is stale: DuckDB={s1_data['order_count']}, "
+                f"tenant_1 PostgreSQL={t1_pg_count}"
+            )
         except Exception as e:
             print(f"   -> Note: tenant_1 PG comparison skipped ({e})")
 

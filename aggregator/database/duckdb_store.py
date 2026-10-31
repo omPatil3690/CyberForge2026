@@ -386,10 +386,15 @@ def upsert_orders(
             f"DELETE FROM orders WHERE id IN ({','.join('?' * len(ids))})",
             ids,
         )
-        # High-speed bulk ingestion via DuckDB native Appender
-        app = conn.appender("orders")
-        app.append_rows(tuples)
-        app.flush()
+        conn.executemany(
+            """
+            INSERT INTO orders (
+                id, tenant_id, customer_id, status,
+                total_amount, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            tuples,
+        )
 
     logger.debug("Upserted %d order rows into DuckDB.", len(tuples))
     return len(tuples)
@@ -425,9 +430,15 @@ def upsert_order_items(
             f"DELETE FROM order_items WHERE id IN ({','.join('?' * len(ids))})",
             ids,
         )
-        app = conn.appender("order_items")
-        app.append_rows(tuples)
-        app.flush()
+        conn.executemany(
+            """
+            INSERT INTO order_items (
+                id, order_id, tenant_id, product_id,
+                quantity, unit_price, total_price, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            tuples,
+        )
 
     logger.debug("Upserted %d order_item rows into DuckDB.", len(tuples))
     return len(tuples)
@@ -463,9 +474,14 @@ def upsert_products(
             f"DELETE FROM products WHERE id IN ({','.join('?' * len(ids))})",
             ids,
         )
-        app = conn.appender("products")
-        app.append_rows(tuples)
-        app.flush()
+        conn.executemany(
+            """
+            INSERT INTO products (
+                id, tenant_id, name, category, price, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            tuples,
+        )
 
     logger.debug("Upserted %d product rows into DuckDB.", len(tuples))
     return len(tuples)
@@ -515,9 +531,11 @@ def recompute_hourly_metrics(conn: duckdb.DuckDBPyConnection, lock: threading.Lo
     """
     acquired = lock if lock is not None else DUCKDB_WRITE_LOCK
     with acquired:
-        conn.execute("DELETE FROM hourly_tenant_metrics")
-        conn.execute(
-            """
+        conn.execute("BEGIN")
+        try:
+            conn.execute("DELETE FROM hourly_tenant_metrics")
+            conn.execute(
+                """
             INSERT INTO hourly_tenant_metrics (
                 tenant_id,
                 period,
@@ -549,8 +567,12 @@ def recompute_hourly_metrics(conn: duckdb.DuckDBPyConnection, lock: threading.Lo
                 COALESCE(SUM(total_amount) FILTER (WHERE status = 'cancelled'), 0.0) AS cancelled_revenue
             FROM orders
             GROUP BY tenant_id, period
-            """
-        )
+                """
+            )
+            conn.execute("COMMIT")
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
     logger.debug("Recomputed hourly_tenant_metrics summary.")
 
 

@@ -72,9 +72,9 @@ This project implements an in-process, columnar OLAP aggregation layer that comp
                                │
                                ▼
 ┌─────────────────────────────────────────────────────────────┐
-│             DUCKDB (In-Process Columnar OLAP)               │
+│          TENANT DUCKDB REPLICAS (In-Process OLAP)            │
 │                                                             │
-│   • Local columnar store (./aggregator.duckdb)              │
+│   • One isolated file per store: data/tenants/tenant_N.duckdb│
 │   • Vectorized execution engine optimized for aggregations  │
 │   • Executes SUM, COUNT, GROUP BY across 1M+ rows in <16ms │
 └──────────────────────────────┬──────────────────────────────┘
@@ -401,7 +401,6 @@ DB_PASSWORD=your_password
 DB_HOST=localhost
 DB_PORT=5432
 DATABASE_URL=postgresql://postgres:your_password@localhost:5432/cyberforge
-DUCKDB_PATH=./aggregator.duckdb
 SYNC_INTERVAL_SECONDS=5
 RATE_LIMIT_PER_MINUTE=60
 ```
@@ -437,7 +436,7 @@ python scripts/generate_data.py --orders 1000000 --tenants 10
 ```bash
 python run_aggregator.py
 ```
-The FastAPI server will boot at `http://localhost:8000`, run an initial synchronization into `./aggregator.duckdb`, and begin background sync polling.
+The FastAPI server will boot at `http://localhost:8000`, discover tenants from the central control database, synchronize each dedicated PostgreSQL tenant database into its matching `data/tenants/tenant_N.duckdb` replica, and begin background polling.
 
 ### 6. Run Verification & Benchmark Suites
 ```bash

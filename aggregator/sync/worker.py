@@ -58,7 +58,7 @@ import duckdb
 
 import aggregator.database.duckdb_store as store
 from aggregator.config import settings
-from aggregator.database.postgres import get_tenant_pg_connection
+from aggregator.database.postgres import get_pg_connection, get_tenant_pg_connection
 
 logger = logging.getLogger(__name__)
 
@@ -79,10 +79,8 @@ def _discover_tenant_ids() -> list[int]:
     Returns:
         Sorted list of tenant IDs found in the database.
     """
-    # We use tenant 1 as a bootstrap connection since it holds the shared
-    # companies/tenants schema alongside the tenant data.
     try:
-        with get_tenant_pg_connection(1) as conn:
+        with get_pg_connection() as conn:
             rows = conn.execute(
                 "SELECT id FROM tenants ORDER BY id"
             ).fetchall()
@@ -117,6 +115,7 @@ class SyncWorker:
         """Initialise the SyncWorker with configuration only (no global DuckDB)."""
         self._interval = interval or settings.sync_interval_seconds
         self._stop_event = threading.Event()
+        self._sync_lock = threading.Lock()
         self._thread: threading.Thread | None = None
 
         # Public state (read by API endpoints; written only by worker thread)
@@ -171,20 +170,21 @@ class SyncWorker:
 
         Called by the ``POST /admin/rebuild`` endpoint.
         """
-        logger.info("Rebuild triggered — clearing all tenant DuckDB replicas and watermarks.")
-        self.is_ready = False
-        self.last_sync_time = None
-        self.last_sync_row_count = 0
-        self.total_syncs = 0
+        with self._sync_lock:
+            logger.info("Rebuild triggered — clearing all tenant DuckDB replicas and watermarks.")
+            self.is_ready = False
+            self.last_sync_time = None
+            self.last_sync_row_count = 0
+            self.total_syncs = 0
 
-        for t_id in (self._tenant_ids or _DEFAULT_TENANT_IDS):
-            try:
-                t_conn = store.get_tenant_duckdb(t_id)
-                t_lock = store.get_tenant_write_lock(t_id)
-                store.truncate_all(t_conn, t_lock)
-                logger.info("Tenant #%d DuckDB truncated for rebuild.", t_id)
-            except Exception as exc:
-                logger.warning("Could not truncate tenant #%d during rebuild: %s", t_id, exc)
+            for t_id in (self._tenant_ids or _DEFAULT_TENANT_IDS):
+                try:
+                    t_conn = store.get_tenant_duckdb(t_id)
+                    t_lock = store.get_tenant_write_lock(t_id)
+                    store.truncate_all(t_conn, t_lock)
+                    logger.info("Tenant #%d DuckDB truncated for rebuild.", t_id)
+                except Exception as exc:
+                    logger.warning("Could not truncate tenant #%d during rebuild: %s", t_id, exc)
 
     # ------------------------------------------------------------------
     # Internal run loop
@@ -208,10 +208,12 @@ class SyncWorker:
                         len(self._tenant_ids),
                         self._tenant_ids,
                     )
-                    self._initial_full_sync_all()
+                    with self._sync_lock:
+                        self._initial_full_sync_all()
                     first_run = False
                 else:
-                    self._incremental_sync_all()
+                    with self._sync_lock:
+                        self._incremental_sync_all()
             except Exception as exc:
                 logger.exception("Sync cycle failed: %s", exc)
 
@@ -256,12 +258,12 @@ class SyncWorker:
                 total_rows,
             )
         else:
-            # Mark ready anyway so the API can serve partial data; failed
-            # tenants will be retried on the next incremental cycle.
-            self.is_ready = True
+            # Keep the API unavailable until every tenant has a complete
+            # initial replica. Failed tenants are retried on the next cycle.
+            self.is_ready = False
             logger.warning(
-                "Initial sync finished with some tenant failures; API is live but some tenant "
-                "data may be incomplete until the next incremental cycle."
+                "Initial sync finished with tenant failures; API remains unavailable "
+                "until every tenant replica is complete."
             )
 
     def _initial_full_sync_tenant(self, tenant_id: int) -> int:
@@ -275,6 +277,16 @@ class SyncWorker:
 
         watermark = store.get_last_sync_time(t_conn, "orders", t_lock)
         if watermark is not None:
+            with t_lock:
+                rollup_rows = t_conn.execute(
+                    "SELECT COUNT(*) FROM hourly_tenant_metrics"
+                ).fetchone()[0]
+            if rollup_rows == 0:
+                logger.warning(
+                    "Tenant #%d has a watermark but no hourly rollup; rebuilding rollup.",
+                    tenant_id,
+                )
+                store.recompute_hourly_metrics(t_conn, t_lock)
             logger.info(
                 "Tenant #%d already has a watermark (%s) — skipping full sync.",
                 tenant_id,
@@ -444,10 +456,12 @@ class SyncWorker:
         block the others.
         """
         total = 0
+        all_succeeded = True
         for t_id in self._tenant_ids:
             try:
                 total += self._incremental_sync_tenant(t_id)
             except Exception as exc:
+                all_succeeded = False
                 logger.warning(
                     "Incremental sync failed for tenant #%d: %s — will retry.", t_id, exc
                 )
@@ -455,6 +469,11 @@ class SyncWorker:
         self.last_sync_time = datetime.now(tz=timezone.utc)
         self.last_sync_row_count = total
         self.total_syncs += 1
+        if not self.is_ready and all_succeeded:
+            self.is_ready = True
+            logger.info(
+                "All tenant replicas completed successfully; API is ready."
+            )
         logger.debug("Incremental sync complete across %d tenants (%d rows).",
                      len(self._tenant_ids), total)
 

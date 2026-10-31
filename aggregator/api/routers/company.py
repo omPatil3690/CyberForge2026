@@ -23,7 +23,7 @@ import logging
 import threading
 import time as _time
 from datetime import datetime, timedelta, timezone
-from typing import Annotated, Any, Any
+from typing import Annotated, Any
 
 import duckdb
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -257,7 +257,7 @@ def get_company_summary(
 
     for s_id in store_ids:
         conn = _get_tenant_conn_strict(s_id, company_id)
-        with store.DUCKDB_WRITE_LOCK:
+        with store.get_tenant_write_lock(s_id):
             row = conn.execute(
                 """
                 SELECT COALESCE(SUM(order_count), 0), COALESCE(SUM(total_revenue), 0.0)
@@ -317,7 +317,7 @@ def get_company_trend(
     for s_id in store_ids:
         conn = _get_tenant_conn_strict(s_id, company_id)
         trunc_fn = "hour" if interval == "hour" else "day"
-        with store.DUCKDB_WRITE_LOCK:
+        with store.get_tenant_write_lock(s_id):
             rows = conn.execute(
                 f"""
                 SELECT strftime(date_trunc('{trunc_fn}', period), '{bucket_format}') AS bucket,
@@ -382,7 +382,7 @@ def get_company_top_products(
 
     for s_id in store_ids:
         conn = _get_tenant_conn_strict(s_id, company_id)
-        with store.DUCKDB_WRITE_LOCK:
+        with store.get_tenant_write_lock(s_id):
             rows = conn.execute(
                 """
                 SELECT p.id, p.name, p.category, SUM(oi.quantity), SUM(oi.total_price)
@@ -459,7 +459,7 @@ def get_company_status_breakdown(
 
     for s_id in store_ids:
         conn = _get_tenant_conn_strict(s_id, company_id)
-        with store.DUCKDB_WRITE_LOCK:
+        with store.get_tenant_write_lock(s_id):
             row = conn.execute(
                 """
                 SELECT
