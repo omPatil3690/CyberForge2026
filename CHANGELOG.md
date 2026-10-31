@@ -190,8 +190,6 @@ All notable changes to the CyberForge2026 Multi-Tenant Aggregation Layer project
   - `ARCHITECTURE_PLAN.md`
   - `CHANGELOG.md`
 
-
-
 ---
 
 #### Change #010 — Core Aggregation Layer Initial Implementation
@@ -223,25 +221,25 @@ All notable changes to the CyberForge2026 Multi-Tenant Aggregation Layer project
   - **`aggregator/requirements.txt`**: Aggregator-specific dependency list (fastapi, uvicorn, duckdb, pydantic, pydantic-settings, python-dotenv, psycopg-pool).
   - **`requirements.txt`** (root): Appended aggregator dependencies to the existing OLTP dependency list.
 - **Affected Files:**
-  - `aggregator/__init__.py` *(created)*
-  - `aggregator/config.py` *(created)*
-  - `aggregator/models/__init__.py` *(created)*
-  - `aggregator/models/schemas.py` *(created)*
-  - `aggregator/database/__init__.py` *(created)*
-  - `aggregator/database/postgres.py` *(created)*
-  - `aggregator/database/duckdb_store.py` *(created)*
-  - `aggregator/sync/__init__.py` *(created)*
-  - `aggregator/sync/worker.py` *(created)*
-  - `aggregator/api/__init__.py` *(created)*
-  - `aggregator/api/dependencies.py` *(created)*
-  - `aggregator/api/routers/__init__.py` *(created)*
-  - `aggregator/api/routers/metrics.py` *(created)*
-  - `aggregator/api/routers/admin.py` *(created)*
-  - `aggregator/api/main.py` *(created)*
-  - `aggregator/requirements.txt` *(created)*
-  - `run_aggregator.py` *(created)*
-  - `requirements.txt` *(modified — aggregator deps appended)*
-  - `CHANGELOG.md` *(modified — this entry)*
+  - `aggregator/__init__.py` _(created)_
+  - `aggregator/config.py` _(created)_
+  - `aggregator/models/__init__.py` _(created)_
+  - `aggregator/models/schemas.py` _(created)_
+  - `aggregator/database/__init__.py` _(created)_
+  - `aggregator/database/postgres.py` _(created)_
+  - `aggregator/database/duckdb_store.py` _(created)_
+  - `aggregator/sync/__init__.py` _(created)_
+  - `aggregator/sync/worker.py` _(created)_
+  - `aggregator/api/__init__.py` _(created)_
+  - `aggregator/api/dependencies.py` _(created)_
+  - `aggregator/api/routers/__init__.py` _(created)_
+  - `aggregator/api/routers/metrics.py` _(created)_
+  - `aggregator/api/routers/admin.py` _(created)_
+  - `aggregator/api/main.py` _(created)_
+  - `aggregator/requirements.txt` _(created)_
+  - `run_aggregator.py` _(created)_
+  - `requirements.txt` _(modified — aggregator deps appended)_
+  - `CHANGELOG.md` _(modified — this entry)_
 
 ---
 
@@ -305,6 +303,37 @@ All notable changes to the CyberForge2026 Multi-Tenant Aggregation Layer project
   - Embedded 1,000,000 synthetic records benchmark results (`scripts/benchmark_1m.py`), documenting side-by-side performance scorecard comparing DuckDB p50 latencies against raw PostgreSQL (13.9x to 30.1x speedup) and 100% OLTP database read offload.
 - **Affected Files:**
   - `README.md`
+  - `CHANGELOG.md`
+
+---
+
+#### Change #015 — Execute 1M Record Benchmark & Persist Output Scorecard
+
+- **Timestamp:** 2026-10-31 19:54:30 IST (UTC+05:30)
+- **Agent/Author:** Antigravity
+- **Type:** Testing
+- **Description:**
+  - Generated and verified 1,000,000 synthetic order records in PostgreSQL and synchronized replica into DuckDB.
+  - Executed full 1M multi-iteration benchmark harness (`scripts/benchmark_1m.py`) across FR-1, FR-2, FR-3, and FR-4 endpoints.
+  - Captured and saved complete benchmark metrics and judge scorecard to `benchmark_1m_results.txt`.
+  - Confirmed all query latencies hit the "Great" performance category (<200ms) with p50 response times ranging from 2.18ms to 4.00ms, achieving up to 63.9x speedup over raw PostgreSQL with 100% numerical correctness.
+- **Affected Files:**
+  - `requirements.txt`
+  - `benchmark_1m_results.txt`
+  - `CHANGELOG.md`
+
+---
+
+#### Change #016 — Ignore DuckDB Database and Write-Ahead Log Artifacts
+
+- **Timestamp:** 2026-10-31 21:44:00 IST (UTC+05:30)
+- **Agent/Author:** Antigravity
+- **Type:** Configuration
+- **Description:**
+  - Updated `.gitignore` to match all DuckDB storage files (`*.duckdb`, `*.duckdb.wal`, `*.duckdb.tmp`).
+  - Removed `aggregator.duckdb` binary database file from git tracking via `git rm --cached` so generated local analytical replicas are not checked into the repository.
+- **Affected Files:**
+  - `.gitignore`
   - `CHANGELOG.md`
 
 ---
@@ -469,14 +498,3 @@ All notable changes to the CyberForge2026 Multi-Tenant Aggregation Layer project
 - **Affected Files:**
   - `.gitignore`
   - `CHANGELOG.md`
-
-
-
-
-
-
-
-
-
-
-
