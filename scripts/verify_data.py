@@ -47,6 +47,25 @@ def main():
         print(f"Total Order Items   : {counts[4]:,}")
         print("----------------------------------------------------------------")
 
+        # Database and Table Storage Footprint
+        cur.execute("SELECT pg_size_pretty(pg_database_size(current_database()));")
+        total_db_size = cur.fetchone()[0]
+        print(f"Database Storage Footprint (Total: {total_db_size}):")
+        cur.execute("""
+            SELECT 
+                c.relname AS table_name,
+                pg_size_pretty(pg_table_size(c.oid)) AS data_size,
+                pg_size_pretty(pg_indexes_size(c.oid)) AS index_size,
+                pg_size_pretty(pg_total_relation_size(c.oid)) AS total_size
+            FROM pg_class c
+            JOIN pg_namespace n ON n.oid = c.relnamespace
+            WHERE n.nspname = 'public' AND c.relkind = 'r'
+            ORDER BY pg_total_relation_size(c.oid) DESC;
+        """)
+        for row in cur.fetchall():
+            print(f"  {row[0]:<16}: Data {row[1]:>8} | Indexes {row[2]:>8} | Total {row[3]:>8}")
+        print("----------------------------------------------------------------")
+
         # Tenant Volume Distribution (Checking Zipfian skew)
         print("Tenant Order Distribution (Verifying Skew):")
         cur.execute("""

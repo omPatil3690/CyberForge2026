@@ -145,3 +145,17 @@ All notable changes to the CyberForge2026 Multi-Tenant Aggregation Layer project
 - **Affected Files:**
   - `scripts/generate_data.py`
   - `CHANGELOG.md`
+
+---
+
+#### Change #009 — Add Database and Table Storage Footprint Diagnostics
+
+- **Timestamp:** 2026-10-31 14:26:00 IST (UTC+05:30)
+- **Agent/Author:** Antigravity
+- **Type:** Enhancement
+- **Description:**
+  - Added storage diagnostic reporting to `scripts/verify_data.py` using PostgreSQL's `pg_database_size`, `pg_table_size`, and `pg_indexes_size` functions.
+  - Enabled automated reporting of overall database disk usage as well as per-table data size, index size, and total relation footprint on disk.
+- **Affected Files:**
+  - `scripts/verify_data.py`
+  - `CHANGELOG.md`
