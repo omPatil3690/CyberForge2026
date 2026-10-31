@@ -25,7 +25,9 @@ Usage::
 from __future__ import annotations
 
 import logging
+import os
 import threading
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Sequence
@@ -214,16 +216,52 @@ def get_tenant_duckdb(tenant_id: int) -> duckdb.DuckDBPyConnection:
         t_lock = _TENANT_WRITE_LOCKS[tenant_id]
 
         with t_lock:
-            conn.execute(_DDL_ORDERS)
-            conn.execute(_DDL_ORDER_ITEMS)
-            conn.execute(_DDL_PRODUCTS)
-            conn.execute(_DDL_SYNC_STATE)
-            conn.execute(_DDL_HOURLY_METRICS)
-            conn.execute(_DDL_INDEXES)
+            _initialize_schema(conn)
 
         _TENANT_CONNECTIONS[tenant_id] = conn
         logger.info("Initialized isolated DuckDB for tenant #%d at %r", tenant_id, db_path)
         return conn
+
+
+def _initialize_schema(conn: duckdb.DuckDBPyConnection) -> None:
+    """Create the complete tenant replica schema on an open connection."""
+    conn.execute(_DDL_ORDERS)
+    conn.execute(_DDL_ORDER_ITEMS)
+    conn.execute(_DDL_PRODUCTS)
+    conn.execute(_DDL_SYNC_STATE)
+    conn.execute(_DDL_HOURLY_METRICS)
+    conn.execute(_DDL_INDEXES)
+
+
+def create_tenant_staging(tenant_id: int) -> tuple[duckdb.DuckDBPyConnection, Path]:
+    """Create a fresh, isolated DuckDB file for an atomic full rebuild."""
+    TENANTS_DIR.mkdir(parents=True, exist_ok=True)
+    path = TENANTS_DIR / f".tenant_{tenant_id}.rebuild.{uuid.uuid4().hex}.duckdb"
+    conn = duckdb.connect(database=str(path), read_only=False)
+    with get_tenant_write_lock(tenant_id):
+        _initialize_schema(conn)
+    logger.info("Created staging DuckDB for tenant #%d at %r", tenant_id, path)
+    return conn, path
+
+
+def promote_tenant_staging(
+    tenant_id: int,
+    staging_conn: duckdb.DuckDBPyConnection,
+    staging_path: Path,
+) -> None:
+    """Atomically activate a validated staging replica."""
+    with get_tenant_write_lock(tenant_id):
+        staging_conn.close()
+        old_conn = _TENANT_CONNECTIONS.pop(tenant_id, None)
+        if old_conn is not None:
+            old_conn.close()
+        live_path = TENANTS_DIR / f"tenant_{tenant_id}.duckdb"
+        os.replace(staging_path, live_path)
+        _TENANT_CONNECTIONS[tenant_id] = duckdb.connect(
+            database=str(live_path),
+            read_only=False,
+        )
+    logger.info("Activated validated DuckDB replica for tenant #%d.", tenant_id)
 
 
 def get_all_tenant_ids() -> list[int]:

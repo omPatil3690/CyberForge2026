@@ -116,6 +116,7 @@ class SyncWorker:
         self._interval = interval or settings.sync_interval_seconds
         self._stop_event = threading.Event()
         self._sync_lock = threading.Lock()
+        self._force_full_sync = False
         self._thread: threading.Thread | None = None
 
         # Public state (read by API endpoints; written only by worker thread)
@@ -171,20 +172,12 @@ class SyncWorker:
         Called by the ``POST /admin/rebuild`` endpoint.
         """
         with self._sync_lock:
-            logger.info("Rebuild triggered — clearing all tenant DuckDB replicas and watermarks.")
+            logger.info("Rebuild requested — scheduling atomic tenant replica replacement.")
             self.is_ready = False
+            self._force_full_sync = True
             self.last_sync_time = None
             self.last_sync_row_count = 0
             self.total_syncs = 0
-
-            for t_id in (self._tenant_ids or _DEFAULT_TENANT_IDS):
-                try:
-                    t_conn = store.get_tenant_duckdb(t_id)
-                    t_lock = store.get_tenant_write_lock(t_id)
-                    store.truncate_all(t_conn, t_lock)
-                    logger.info("Tenant #%d DuckDB truncated for rebuild.", t_id)
-                except Exception as exc:
-                    logger.warning("Could not truncate tenant #%d during rebuild: %s", t_id, exc)
 
     # ------------------------------------------------------------------
     # Internal run loop
@@ -201,7 +194,7 @@ class SyncWorker:
         while not self._stop_event.is_set():
             cycle_start = time.monotonic()
             try:
-                if first_run:
+                if first_run or self._force_full_sync:
                     self._tenant_ids = _discover_tenant_ids()
                     logger.info(
                         "Discovered %d tenant(s): %s",
@@ -209,8 +202,10 @@ class SyncWorker:
                         self._tenant_ids,
                     )
                     with self._sync_lock:
-                        self._initial_full_sync_all()
-                    first_run = False
+                        completed = self._initial_full_sync_all(force=self._force_full_sync)
+                    if completed:
+                        first_run = False
+                        self._force_full_sync = False
                 else:
                     with self._sync_lock:
                         self._incremental_sync_all()
@@ -224,7 +219,7 @@ class SyncWorker:
     # Initial full sync (all tenants)
     # ------------------------------------------------------------------
 
-    def _initial_full_sync_all(self) -> None:
+    def _initial_full_sync_all(self, force: bool = False) -> bool:
         """Perform a per-tenant full sync for every tenant that lacks a watermark.
 
         For each tenant:
@@ -239,7 +234,7 @@ class SyncWorker:
 
         for t_id in self._tenant_ids:
             try:
-                rows = self._initial_full_sync_tenant(t_id)
+                rows = self._initial_full_sync_tenant(t_id, force=force)
                 total_rows += rows
             except Exception as exc:
                 logger.error(
@@ -257,6 +252,7 @@ class SyncWorker:
                 len(self._tenant_ids),
                 total_rows,
             )
+            return True
         else:
             # Keep the API unavailable until every tenant has a complete
             # initial replica. Failed tenants are retried on the next cycle.
@@ -265,47 +261,103 @@ class SyncWorker:
                 "Initial sync finished with tenant failures; API remains unavailable "
                 "until every tenant replica is complete."
             )
+            return False
 
-    def _initial_full_sync_tenant(self, tenant_id: int) -> int:
+    def _initial_full_sync_tenant(self, tenant_id: int, force: bool = False) -> int:
         """Perform a full sync for a single tenant.
 
         Returns:
             Total number of rows synced into this tenant's DuckDB.
         """
-        t_conn = store.get_tenant_duckdb(tenant_id)
         t_lock = store.get_tenant_write_lock(tenant_id)
-
-        watermark = store.get_last_sync_time(t_conn, "orders", t_lock)
-        if watermark is not None:
-            with t_lock:
-                rollup_rows = t_conn.execute(
-                    "SELECT COUNT(*) FROM hourly_tenant_metrics"
-                ).fetchone()[0]
-            if rollup_rows == 0:
+        live_conn = None
+        if not force:
+            try:
+                live_conn = store.get_tenant_duckdb(tenant_id)
+                watermark = store.get_last_sync_time(live_conn, "orders", t_lock)
+                with get_tenant_pg_connection(tenant_id) as source:
+                    expected_orders, expected_items = source.execute(
+                        "SELECT (SELECT COUNT(*) FROM orders), "
+                        "(SELECT COUNT(*) FROM order_items)"
+                    ).fetchone()
+                with t_lock:
+                    actual_orders, actual_items, rollup_orders = live_conn.execute(
+                        "SELECT "
+                        "(SELECT COUNT(*) FROM orders), "
+                        "(SELECT COUNT(*) FROM order_items), "
+                        "(SELECT COALESCE(SUM(order_count), 0) FROM hourly_tenant_metrics)"
+                    ).fetchone()
+                if (
+                    watermark is not None
+                    and rollup_orders == expected_orders
+                    and actual_orders == expected_orders
+                    and actual_items == expected_items
+                ):
+                    logger.info(
+                        "Tenant #%d already has a validated replica (%s) — "
+                        "skipping full sync.",
+                        tenant_id,
+                        watermark,
+                    )
+                    return 0
                 logger.warning(
-                    "Tenant #%d has a watermark but no hourly rollup; rebuilding rollup.",
+                    "Tenant #%d replica is incomplete; rebuilding atomically.",
                     tenant_id,
                 )
-                store.recompute_hourly_metrics(t_conn, t_lock)
+            except Exception as exc:
+                logger.warning(
+                    "Tenant #%d replica validation failed; rebuilding atomically: %s",
+                    tenant_id,
+                    exc,
+                )
+
+        staging_conn, staging_path = store.create_tenant_staging(tenant_id)
+        staging_lock = t_lock
+        try:
+            logger.info("Starting atomic initial full sync for tenant #%d…", tenant_id)
+            total = 0
+            total += self._sync_products_full_tenant(tenant_id, staging_conn, staging_lock)
+            total += self._sync_orders_full_tenant(tenant_id, staging_conn, staging_lock)
+            total += self._sync_order_items_full_tenant(tenant_id, staging_conn, staging_lock)
+            store.recompute_hourly_metrics(staging_conn, staging_lock)
+
+            with get_tenant_pg_connection(tenant_id) as source:
+                expected_orders, expected_items = source.execute(
+                    "SELECT (SELECT COUNT(*) FROM orders), "
+                    "(SELECT COUNT(*) FROM order_items)"
+                ).fetchone()
+            with staging_lock:
+                actual_orders, actual_items, rollup_orders = staging_conn.execute(
+                    "SELECT "
+                    "(SELECT COUNT(*) FROM orders), "
+                    "(SELECT COUNT(*) FROM order_items), "
+                    "(SELECT COALESCE(SUM(order_count), 0) FROM hourly_tenant_metrics)"
+                ).fetchone()
+            if (actual_orders, actual_items, rollup_orders) != (
+                expected_orders,
+                expected_items,
+                expected_orders,
+            ):
+                raise RuntimeError(
+                    f"tenant #{tenant_id} validation failed: "
+                    f"source=({expected_orders}, {expected_items}), "
+                    f"replica=({actual_orders}, {actual_items}), "
+                    f"rollup={rollup_orders}"
+                )
+
+            store.promote_tenant_staging(tenant_id, staging_conn, staging_path)
             logger.info(
-                "Tenant #%d already has a watermark (%s) — skipping full sync.",
+                "Atomic initial full sync complete for tenant #%d (%d rows).",
                 tenant_id,
-                watermark,
+                total,
             )
-            return 0
-
-        logger.info("Starting initial full sync for tenant #%d…", tenant_id)
-        total = 0
-
-        total += self._sync_products_full_tenant(tenant_id, t_conn, t_lock)
-        total += self._sync_orders_full_tenant(tenant_id, t_conn, t_lock)
-        total += self._sync_order_items_full_tenant(tenant_id, t_conn, t_lock)
-        store.recompute_hourly_metrics(t_conn, t_lock)
-
-        logger.info(
-            "Initial full sync complete for tenant #%d (%d rows).", tenant_id, total
-        )
-        return total
+            return total
+        except Exception:
+            try:
+                staging_conn.close()
+            finally:
+                staging_path.unlink(missing_ok=True)
+            raise
 
     def _sync_products_full_tenant(
         self,

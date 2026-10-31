@@ -71,14 +71,17 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # 2. Wait for the initial sync to complete before serving requests
     logger.info("Waiting for initial sync to complete…")
     _wait_start = time.monotonic()
+    last_wait_log = _wait_start
     while not worker.is_ready:
         time.sleep(0.5)
-        elapsed = time.monotonic() - _wait_start
-        if elapsed > 600:  # 10-minute guard for extremely large datasets
+        now = time.monotonic()
+        if now - last_wait_log >= 30:
             logger.warning(
-                "Initial sync taking longer than 10 minutes — starting API anyway."
+                "Initial sync is still in progress after %.1f s; "
+                "API remains unavailable until every tenant is validated.",
+                now - _wait_start,
             )
-            break
+            last_wait_log = now
 
     logger.info(
         "Initial sync complete in %.1f s. API is ready.",
