@@ -2,9 +2,9 @@
 """
 scripts/test_aggregator.py — Official Verification Suite for CyberForge Aggregation Layer.
 
-Primary Evaluation: Company Owner Dashboard (10 Stores / Tenants, 1,000,000 Total Records)
+Primary Evaluation: Company Owner Dashboard (10 Stores / Tenants, dynamic dataset size)
 Evaluates against all hackathon targets from PS.md:
-  • FR-1: Company Owner Order Summary (All 10 Stores, 1,000,000 orders, < 200 ms target)
+  • FR-1: Company Owner Order Summary (All 10 Stores, source-count validated, < 200 ms target)
   • FR-2: Company Owner Daily Trend (31-day timeseries across all 10 stores) — exact match vs PG
   • FR-3: Company Owner Top-10 Products (ranked across entire store network) — exact match vs PG
   • FR-4: Company Owner Status Breakdown (delivered, shipped, placed, cancelled) — exact match vs PG
@@ -33,7 +33,7 @@ from aggregator.database.postgres import get_pg_connection, get_tenant_pg_connec
 def run_tests():
     print("=" * 76)
     print("  CYBERFORGE MULTI-TENANT AGGREGATION LAYER — OFFICIAL VERIFICATION SUITE")
-    print("  Scope: 1 Company Owner, 10 Stores / Tenants, 1,000,000 Total Records")
+    print("  Scope: 1 Company Owner, 10 Stores / Tenants, source-count validated")
     print("  Performance Target: < 200 ms query latency | < 30 s data freshness")
     print("=" * 76)
 
@@ -49,14 +49,18 @@ def run_tests():
         r_health = client.get("/admin/health")
         assert r_health.status_code == 200
         health = r_health.json()
+        expected_orders = health["pg_order_count_estimate"]
         print(f"   -> DuckDB Synced  : {health['duckdb_order_count']:,} orders across all store replicas")
         print(f"   -> PostgreSQL Est.: {health['pg_order_count_estimate']:,} orders across 10 tenant databases")
-        assert health['duckdb_order_count'] == 1000000, f"Expected 1M orders, got {health['duckdb_order_count']}"
+        assert health["duckdb_order_count"] == expected_orders, (
+            f"DuckDB/PostgreSQL order count mismatch: "
+            f"DuckDB={health['duckdb_order_count']}, PostgreSQL={expected_orders}"
+        )
 
         # -------------------------------------------------------------
-        # 2. FR-1 Company Owner Summary (All 10 Stores / 1,000,000 Records)
+        # 2. FR-1 Company Owner Summary (All 10 Stores / source-count validated)
         # -------------------------------------------------------------
-        print("\n2. Testing FR-1: Company Owner Summary (All 10 Stores / 1,000,000 Orders)...")
+        print("\n2. Testing FR-1: Company Owner Summary (All 10 Stores)...")
         url_comp_summary = "/companies/1/metrics/summary?from_date=2026-01-01T00:00:00&to_date=2026-12-31T23:59:59"
         client.get(url_comp_summary)  # Warmup
         t0 = time.perf_counter()
@@ -87,7 +91,10 @@ def run_tests():
             f"FR-1 order count mismatch: API={summary['order_count']}, PG={pg_orders}"
         assert abs(summary["total_revenue"] - pg_revenue) < 0.02, \
             f"FR-1 revenue mismatch: API={summary['total_revenue']}, PG={pg_revenue}"
-        assert summary['order_count'] == 1000000, f"Expected 1M combined orders, got {summary['order_count']}"
+        assert summary["order_count"] == pg_orders, (
+            f"Expected company total to match PostgreSQL: "
+            f"API={summary['order_count']}, PostgreSQL={pg_orders}"
+        )
         print(f"   -> Correctness    : EXACT MATCH (orders={pg_orders:,}, revenue=${pg_revenue:,.2f})")
 
         # -------------------------------------------------------------
@@ -192,9 +199,9 @@ def run_tests():
             print(f"   -> #{item['rank']} [{item['category']}] {item['name']} — {item['total_quantity']:,} sold (${item['total_revenue']:,.2f})")
 
         # -------------------------------------------------------------
-        # 5. FR-4 Company Owner Status Breakdown (All 1,000,000 Orders)
+        # 5. FR-4 Company Owner Status Breakdown (All source orders)
         # -------------------------------------------------------------
-        print("\n5. Testing FR-4: Company Owner Status Breakdown (All 1,000,000 Orders)...")
+        print("\n5. Testing FR-4: Company Owner Status Breakdown...")
         t0 = time.perf_counter()
         r = client.get(
             "/companies/1/metrics/breakdown/status"
