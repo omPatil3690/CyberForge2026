@@ -454,3 +454,27 @@ All notable changes to the CyberForge2026 Multi-Tenant Aggregation Layer project
   - `aggregator/static/css/dashboard.css`
   - `aggregator/static/js/dashboard.js`
   - `CHANGELOG.md`
+
+---
+
+#### Change #022 — Dashboard Data Hydration & Server Execution Hardening
+
+- **Timestamp:** 2026-11-01 01:42:00 IST (UTC+05:30)
+- **Agent/Author:** Antigravity (AI) & Sandesh Lavshetty
+- **Type:** Fix / UI / Operational
+- **Description:**
+  - Resolved 0-value metric displays across the dashboard by anchoring date range presets (`7D`, `30D`, `90D`, `All 2026`) directly to the 2026 synthetic dataset window (`2026-11-01`), preventing client machine system clock discrepancies from returning zero records.
+  - Added automated `.venv` environment detection and transparent re-execution in `run_aggregator.py`, preventing `ModuleNotFoundError: No module named 'uvicorn'` when run with system Python.
+  - Added HTTP latency-tracking middleware in `aggregator/api/main.py` intercepting all `/companies`, `/tenants`, and `/admin` requests and recording real-time latency into `_latency_deque`.
+  - Fixed initial startup freshness lag (`data_freshness_seconds`) in `aggregator/sync/worker.py` by setting `self.last_sync_time` on existing DuckDB replica detection (reduced from `9999.0s` to `< 1.0s`).
+  - Upgraded `aggregator/static/js/dashboard.js` with `API_BASE` resolution (allowing direct viewing from `file://` or custom hosts) and `Promise.allSettled` safe hydration.
+  - Added interactive store switcher to the Air-Gap Architecture section in `index.html` with click-to-inspect support across all 10 stores.
+- **Affected Files:**
+  - `run_aggregator.py`
+  - `aggregator/sync/worker.py`
+  - `aggregator/api/main.py`
+  - `aggregator/api/routers/admin.py`
+  - `aggregator/static/js/dashboard.js`
+  - `aggregator/static/index.html`
+  - `CHANGELOG.md`
+

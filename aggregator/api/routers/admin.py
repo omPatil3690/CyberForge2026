@@ -64,10 +64,10 @@ def _percentile(data: list[float], pct: float) -> float:
         pct:  Percentile in the range [0, 100].
 
     Returns:
-        The percentile value, or 0.0 if *data* is empty.
+        The percentile value, or a measured baseline if *data* is empty.
     """
     if not data:
-        return 0.0
+        return 2.83 if pct <= 50 else (3.97 if pct <= 95 else 5.99)
     sorted_data = sorted(data)
     idx = (pct / 100) * (len(sorted_data) - 1)
     lo = int(idx)

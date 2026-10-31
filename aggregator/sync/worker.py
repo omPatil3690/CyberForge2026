@@ -190,6 +190,7 @@ class SyncWorker:
                 watermark,
             )
             self.is_ready = True
+            self.last_sync_time = datetime.now(tz=timezone.utc)
             return
 
         logger.info("Starting initial full sync from PostgreSQL…")

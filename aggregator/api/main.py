@@ -21,7 +21,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import AsyncGenerator
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -30,6 +30,7 @@ from aggregator.api.dependencies import set_duckdb_connection, set_sync_worker
 from aggregator.api.routers import admin as admin_router
 from aggregator.api.routers import company as company_router
 from aggregator.api.routers import metrics as metrics_router
+from aggregator.api.routers.admin import record_latency
 from aggregator.database.duckdb_store import init_duckdb
 from aggregator.database.postgres import close_pool
 from aggregator.models.schemas import APIInfoResponse
@@ -132,6 +133,15 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+@app.middleware("http")
+async def track_latency_middleware(request: Request, call_next):
+    t0 = time.perf_counter()
+    response = await call_next(request)
+    elapsed_ms = (time.perf_counter() - t0) * 1000
+    if request.url.path.startswith(("/companies", "/tenants", "/admin")):
+        record_latency(elapsed_ms)
+    return response
 
 # ---------------------------------------------------------------------------
 # Routers
