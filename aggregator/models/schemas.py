@@ -281,3 +281,79 @@ class APIInfoResponse(BaseModel):
     description: str
     docs_url: str
     endpoints: dict[str, Any]
+
+
+# ---------------------------------------------------------------------------
+# Company Owner — Multi-Store Aggregated Rollup Schemas
+# ---------------------------------------------------------------------------
+
+class CompanySummaryResponse(FreshnessMixin):
+    """Aggregated order summary across multiple stores owned by a company."""
+
+    company_id: int
+    store_count: int
+    stores: list[int]
+    order_count: int
+    total_revenue: float
+    avg_order_value: float
+    from_date: datetime
+    to_date: datetime
+
+
+class CompanyTrendResponse(FreshnessMixin):
+    """Aggregated time-series trend across multiple stores owned by a company."""
+
+    company_id: int
+    store_count: int
+    stores: list[int]
+    interval: str
+    data: list[TrendDataPoint]
+
+
+class CompanyTopProductsResponse(FreshnessMixin):
+    """Aggregated top-selling products across all stores owned by a company."""
+
+    company_id: int
+    store_count: int
+    stores: list[int]
+    limit: int
+    data: list[TopProductItem]
+
+
+class CompanyStatusBreakdownResponse(FreshnessMixin):
+    """Aggregated status breakdown across all stores owned by a company."""
+
+    company_id: int
+    store_count: int
+    stores: list[int]
+    data: list[StatusBreakdownItem]
+
+
+# ---------------------------------------------------------------------------
+# Bonus B-4 — Config-Driven Metrics Schemas
+# ---------------------------------------------------------------------------
+
+class CustomMetricConfigItem(BaseModel):
+    """Metadata describing a configured dynamic metric from metrics.yaml."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    name: str
+    title: str
+    description: str
+    unit: str
+
+
+class CustomMetricResponse(FreshnessMixin):
+    """Evaluated result for a dynamic metric defined in config/metrics.yaml."""
+
+    tenant_id: int
+    metric_name: str
+    title: str
+    description: str
+    unit: str
+    value: float
+    from_date: datetime
+    to_date: datetime
+
+

@@ -1,0 +1,34 @@
+# CyberForge Config-Driven Metrics Engine (Bonus B-4)
+# Allows business owners and admins to add, edit, or customize metrics
+# dynamically without writing or modifying Python code.
+
+metrics:
+  cancellation_rate:
+    title: "Order Cancellation Rate"
+    description: "Percentage of total orders that resulted in cancellation"
+    unit: "percent"
+    expression: "ROUND(100.0 * COALESCE(SUM(cancelled_count), 0) / NULLIF(SUM(order_count), 0), 2)"
+
+  fulfillment_rate:
+    title: "Fulfillment Success Rate"
+    description: "Percentage of total orders successfully delivered to customers"
+    unit: "percent"
+    expression: "ROUND(100.0 * COALESCE(SUM(delivered_count), 0) / NULLIF(SUM(order_count), 0), 2)"
+
+  net_delivered_revenue:
+    title: "Net Delivered Revenue"
+    description: "Total revenue exclusively from delivered orders"
+    unit: "currency"
+    expression: "ROUND(COALESCE(SUM(delivered_revenue), 0.0), 2)"
+
+  dispatched_volume:
+    title: "Dispatched Volume"
+    description: "Total orders either currently in transit (shipped) or delivered"
+    unit: "count"
+    expression: "COALESCE(SUM(shipped_count) + SUM(delivered_count), 0)"
+
+  average_hourly_sales:
+    title: "Average Hourly Sales Velocity"
+    description: "Mean hourly revenue across all recorded operating hours"
+    unit: "currency"
+    expression: "ROUND(COALESCE(AVG(total_revenue), 0.0), 2)"

@@ -40,6 +40,7 @@ endpoints:
 
 from __future__ import annotations
 
+import collections
 import logging
 import threading
 import time
@@ -54,7 +55,7 @@ from aggregator.database.postgres import get_pg_connection
 
 logger = logging.getLogger(__name__)
 
-_INITIAL_SYNC_BATCH = 10_000   # rows per page during full initial sync
+_INITIAL_SYNC_BATCH = 50_000   # rows per page during full initial sync (high-speed keyset)
 _INCREMENTAL_LIMIT = 5_000     # max rows per incremental poll
 
 
@@ -203,6 +204,9 @@ class SyncWorker:
         # --- Order items (paginated) ---
         total_rows += self._sync_order_items_full()
 
+        # --- Recompute two-tier privacy-safe hourly rollup ---
+        store.recompute_hourly_metrics(self._conn)
+
         self.is_ready = True
         self.last_sync_time = datetime.now(tz=timezone.utc)
         self.last_sync_row_count = total_rows
@@ -226,15 +230,15 @@ class SyncWorker:
         return count
 
     def _sync_orders_full(self) -> int:
-        """Paginate through all orders and upsert into DuckDB.
+        """Paginate through all orders using O(1) keyset pagination and upsert into DuckDB.
 
         Also records the watermark as ``max(updated_at)`` of all fetched rows.
 
         Returns:
             Total number of order rows synced.
         """
-        logger.info("Syncing all orders (batch_size=%d)…", _INITIAL_SYNC_BATCH)
-        offset = 0
+        logger.info("Syncing all orders (batch_size=%d, keyset)…", _INITIAL_SYNC_BATCH)
+        last_id = 0
         total = 0
         max_updated_at: datetime | None = None
 
@@ -245,10 +249,11 @@ class SyncWorker:
                     SELECT id, tenant_id, customer_id, status,
                            total_amount, created_at, updated_at
                     FROM orders
+                    WHERE id > %s
                     ORDER BY id
-                    LIMIT %s OFFSET %s
+                    LIMIT %s
                     """,
-                    [_INITIAL_SYNC_BATCH, offset],
+                    [last_id, _INITIAL_SYNC_BATCH],
                 ).fetchall()
 
             if not rows:
@@ -256,7 +261,7 @@ class SyncWorker:
 
             count = store.upsert_orders(self._conn, rows)
             total += count
-            offset += len(rows)
+            last_id = rows[-1][0]
 
             # Track the highest updated_at seen so far
             for row in rows:
@@ -267,7 +272,7 @@ class SyncWorker:
                     if max_updated_at is None or row_updated_at > max_updated_at:
                         max_updated_at = row_updated_at
 
-            logger.info("Orders synced so far: %d (offset=%d)", total, offset)
+            logger.info("Orders synced so far: %d (last_id=%d)", total, last_id)
 
             if len(rows) < _INITIAL_SYNC_BATCH:
                 break  # Last page
@@ -279,13 +284,13 @@ class SyncWorker:
         return total
 
     def _sync_order_items_full(self) -> int:
-        """Paginate through all order_items and upsert into DuckDB.
+        """Paginate through all order_items using O(1) keyset pagination and upsert into DuckDB.
 
         Returns:
             Total number of order_item rows synced.
         """
-        logger.info("Syncing all order_items (batch_size=%d)…", _INITIAL_SYNC_BATCH)
-        offset = 0
+        logger.info("Syncing all order_items (batch_size=%d, keyset)…", _INITIAL_SYNC_BATCH)
+        last_id = 0
         total = 0
 
         while True:
@@ -295,10 +300,11 @@ class SyncWorker:
                     SELECT id, order_id, tenant_id, product_id,
                            quantity, unit_price, total_price, created_at
                     FROM order_items
+                    WHERE id > %s
                     ORDER BY id
-                    LIMIT %s OFFSET %s
+                    LIMIT %s
                     """,
-                    [_INITIAL_SYNC_BATCH, offset],
+                    [last_id, _INITIAL_SYNC_BATCH],
                 ).fetchall()
 
             if not rows:
@@ -306,9 +312,9 @@ class SyncWorker:
 
             count = store.upsert_order_items(self._conn, rows)
             total += count
-            offset += len(rows)
+            last_id = rows[-1][0]
 
-            logger.info("Order items synced so far: %d (offset=%d)", total, offset)
+            logger.info("Order items synced so far: %d (last_id=%d)", total, last_id)
 
             if len(rows) < _INITIAL_SYNC_BATCH:
                 break
@@ -356,13 +362,31 @@ class SyncWorker:
             self.total_syncs += 1
             return
 
-        # Upsert orders
+        # Upsert orders into global replica
         count = store.upsert_orders(self._conn, rows)
         total = count
 
         # Fetch and upsert order_items for changed orders
         changed_ids = [row[0] for row in rows]
         total += self._sync_items_for_orders(changed_ids)
+
+        # Refresh two-tier privacy-safe hourly rollup on global replica
+        store.recompute_hourly_metrics(self._conn)
+
+        # Route changed orders and items directly to each tenant's isolated database
+        tenant_batches: dict[int, list] = collections.defaultdict(list)
+        for r in rows:
+            tenant_batches[r[1]].append(r)
+
+        for t_id, t_rows in tenant_batches.items():
+            try:
+                t_conn = store.get_tenant_duckdb(t_id)
+                store.upsert_orders(t_conn, t_rows)
+                t_changed_ids = [tr[0] for tr in t_rows]
+                self._sync_items_for_tenant_orders(t_conn, t_changed_ids)
+                store.recompute_hourly_metrics(t_conn)
+            except Exception as exc:
+                logger.warning("Could not sync incremental orders to tenant #%d: %s", t_id, exc)
 
         # Advance watermark
         max_updated_at: datetime | None = None
@@ -385,6 +409,23 @@ class SyncWorker:
             count,
             max_updated_at,
         )
+
+    def _sync_items_for_tenant_orders(self, conn: duckdb.DuckDBPyConnection, order_ids: list[int]) -> int:
+        """Fetch and upsert order_items directly into a tenant's isolated DuckDB."""
+        if not order_ids:
+            return 0
+        placeholders = ",".join(["%s"] * len(order_ids))
+        with get_pg_connection() as pg_conn:
+            rows = pg_conn.execute(
+                f"""
+                SELECT id, order_id, tenant_id, product_id,
+                       quantity, unit_price, total_price, created_at
+                FROM order_items
+                WHERE order_id IN ({placeholders})
+                """,
+                order_ids,
+            ).fetchall()
+        return store.upsert_order_items(conn, rows)
 
     def _sync_items_for_orders(self, order_ids: list[int]) -> int:
         """Fetch and upsert all order_items belonging to the given order IDs.

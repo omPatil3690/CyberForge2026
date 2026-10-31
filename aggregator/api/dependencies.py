@@ -60,6 +60,23 @@ def get_duckdb() -> Generator[duckdb.DuckDBPyConnection, None, None]:
     yield _duckdb_conn
 
 
+def get_tenant_db(tenant_id: int) -> duckdb.DuckDBPyConnection:
+    """FastAPI dependency providing strict Database-per-Tenant physical isolation.
+
+    Directs all dashboard queries to the tenant's isolated DuckDB file
+    at ``data/tenants/tenant_{tenant_id}.duckdb``.
+    """
+    from aggregator.database.duckdb_store import get_tenant_duckdb
+    try:
+        return get_tenant_duckdb(tenant_id)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to access isolated database for tenant #{tenant_id}: {exc}",
+        )
+
+
+
 # ---------------------------------------------------------------------------
 # SyncWorker reference (set by main.py lifespan)
 # ---------------------------------------------------------------------------

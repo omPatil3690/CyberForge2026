@@ -121,6 +121,21 @@ def close_pool() -> None:
         _pool = None
 
 
+@contextmanager
+def get_tenant_pg_connection(tenant_id: int) -> Generator[psycopg.Connection, None, None]:
+    """Return a direct connection to a specific tenant's dedicated PostgreSQL database.
+
+    Connects to ``cyberforge_tenant_{tenant_id}`` directly, establishing
+    database-level physical isolation at the source transactional tier.
+    """
+    base_info = f"host={settings.db_host} port={settings.db_port} user={settings.db_user} password={settings.db_password}"
+    db_name = f"cyberforge_tenant_{tenant_id}"
+    conn_str = f"{base_info} dbname={db_name}"
+    with psycopg.connect(conn_str) as conn:
+        yield conn
+
+
+
 def pg_order_count_estimate() -> int:
     """Return a fast (non-locking) approximate row count for ``orders``.
 

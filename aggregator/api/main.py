@@ -26,6 +26,7 @@ from fastapi.responses import JSONResponse
 
 from aggregator.api.dependencies import set_duckdb_connection, set_sync_worker
 from aggregator.api.routers import admin as admin_router
+from aggregator.api.routers import company as company_router
 from aggregator.api.routers import metrics as metrics_router
 from aggregator.database.duckdb_store import init_duckdb
 from aggregator.database.postgres import close_pool
@@ -137,6 +138,9 @@ app.add_middleware(
 # Metrics router: /tenants/{tenant_id}/metrics/...
 app.include_router(metrics_router.router)
 
+# Company owner multi-store router: /companies/{company_id}/metrics/...
+app.include_router(company_router.router)
+
 # Admin router: /admin/...
 app.include_router(admin_router.router)
 
@@ -170,6 +174,12 @@ def root() -> APIInfoResponse:
                 "trend":            "GET /tenants/{tenant_id}/metrics/trend",
                 "top_products":     "GET /tenants/{tenant_id}/metrics/top-products",
                 "status_breakdown": "GET /tenants/{tenant_id}/metrics/breakdown/status",
+            },
+            "company": {
+                "summary":          "GET /companies/{company_id}/metrics/summary",
+                "trend":            "GET /companies/{company_id}/metrics/trend",
+                "top_products":     "GET /companies/{company_id}/metrics/top-products",
+                "status_breakdown": "GET /companies/{company_id}/metrics/breakdown/status",
             },
             "admin": {
                 "health":  "GET  /admin/health",

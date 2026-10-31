@@ -6,13 +6,23 @@ DROP TABLE IF EXISTS orders CASCADE;
 DROP TABLE IF EXISTS products CASCADE;
 DROP TABLE IF EXISTS customers CASCADE;
 DROP TABLE IF EXISTS tenants CASCADE;
+DROP TABLE IF EXISTS companies CASCADE;
 
--- Tenants table (FR-5: Strict Tenant Isolation)
-CREATE TABLE tenants (
+-- Companies table (Hierarchical Company Owner Multi-Store Network)
+CREATE TABLE companies (
     id SERIAL PRIMARY KEY,
     name VARCHAR(255) NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+-- Tenants / Stores table (FR-5: Strict Tenant Isolation linked to Company Owner)
+CREATE TABLE tenants (
+    id SERIAL PRIMARY KEY,
+    company_id INT NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+    name VARCHAR(255) NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX idx_tenants_company ON tenants(company_id);
 
 -- Customers per tenant
 CREATE TABLE customers (

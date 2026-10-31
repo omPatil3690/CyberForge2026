@@ -31,11 +31,16 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from aggregator.api.dependencies import (
     check_rate_limit,
     get_duckdb,
+    get_tenant_db,
     get_sync_worker,
     require_ready,
 )
+from pathlib import Path
+import yaml
 from aggregator.database.duckdb_store import DUCKDB_WRITE_LOCK
 from aggregator.models.schemas import (
+    CustomMetricConfigItem,
+    CustomMetricResponse,
     StatusBreakdownItem,
     StatusBreakdownResponse,
     SummaryResponse,
@@ -125,7 +130,7 @@ def get_summary(
     tenant_id: int,
     from_date: Annotated[str | None, Query(description="Start of window (ISO-8601)")] = None,
     to_date: Annotated[str | None, Query(description="End of window (ISO-8601)")] = None,
-    conn: duckdb.DuckDBPyConnection = Depends(get_duckdb),
+    conn: duckdb.DuckDBPyConnection = Depends(get_tenant_db),
     worker: SyncWorker = Depends(get_sync_worker),
     _ready: None = Depends(require_ready),
     _rate: None = Depends(check_rate_limit),
@@ -149,13 +154,13 @@ def get_summary(
         row = conn.execute(
             """
             SELECT
-                COUNT(*)                             AS order_count,
-                COALESCE(SUM(total_amount),  0.0)   AS total_revenue,
-                COALESCE(AVG(total_amount),  0.0)   AS avg_order_value
-            FROM orders
+                COALESCE(SUM(order_count), 0)                                                    AS order_count,
+                COALESCE(SUM(total_revenue), 0.0)                                                AS total_revenue,
+                COALESCE(CASE WHEN SUM(order_count) > 0 THEN SUM(total_revenue) / SUM(order_count) ELSE 0.0 END, 0.0) AS avg_order_value
+            FROM hourly_tenant_metrics
             WHERE tenant_id = ?
-              AND created_at >= ?
-              AND created_at <= ?
+              AND period >= ?
+              AND period <= ?
             """,
             [tenant_id, fd, td],
         ).fetchone()
@@ -192,7 +197,7 @@ def get_trend(
     from_date: Annotated[str | None, Query(description="Start of window (ISO-8601)")] = None,
     to_date: Annotated[str | None, Query(description="End of window (ISO-8601)")] = None,
     interval: Annotated[str, Query(description="Grouping interval: 'hour' or 'day'")] = "day",
-    conn: duckdb.DuckDBPyConnection = Depends(get_duckdb),
+    conn: duckdb.DuckDBPyConnection = Depends(get_tenant_db),
     worker: SyncWorker = Depends(get_sync_worker),
     _ready: None = Depends(require_ready),
     _rate: None = Depends(check_rate_limit),
@@ -230,15 +235,15 @@ def get_trend(
         rows = conn.execute(
             f"""
             SELECT
-                DATE_TRUNC('{trunc_unit}', created_at)  AS period,
-                COUNT(*)                                 AS order_count,
-                COALESCE(SUM(total_amount), 0.0)         AS revenue
-            FROM orders
+                DATE_TRUNC('{trunc_unit}', period)  AS p,
+                SUM(order_count)                    AS order_count,
+                COALESCE(SUM(total_revenue), 0.0)   AS revenue
+            FROM hourly_tenant_metrics
             WHERE tenant_id = ?
-              AND created_at >= ?
-              AND created_at <= ?
-            GROUP BY period
-            ORDER BY period ASC
+              AND period >= ?
+              AND period <= ?
+            GROUP BY p
+            ORDER BY p ASC
             """,
             [tenant_id, fd, td],
         ).fetchall()
@@ -281,7 +286,7 @@ def get_top_products(
     from_date: Annotated[str | None, Query(description="Start of window (ISO-8601)")] = None,
     to_date: Annotated[str | None, Query(description="End of window (ISO-8601)")] = None,
     limit: Annotated[int, Query(ge=1, le=50, description="Max products to return (1–50)")] = 10,
-    conn: duckdb.DuckDBPyConnection = Depends(get_duckdb),
+    conn: duckdb.DuckDBPyConnection = Depends(get_tenant_db),
     worker: SyncWorker = Depends(get_sync_worker),
     _ready: None = Depends(require_ready),
     _rate: None = Depends(check_rate_limit),
@@ -364,7 +369,7 @@ def get_status_breakdown(
     tenant_id: int,
     from_date: Annotated[str | None, Query(description="Start of window (ISO-8601)")] = None,
     to_date: Annotated[str | None, Query(description="End of window (ISO-8601)")] = None,
-    conn: duckdb.DuckDBPyConnection = Depends(get_duckdb),
+    conn: duckdb.DuckDBPyConnection = Depends(get_tenant_db),
     worker: SyncWorker = Depends(get_sync_worker),
     _ready: None = Depends(require_ready),
     _rate: None = Depends(check_rate_limit),
@@ -388,17 +393,19 @@ def get_status_breakdown(
     with DUCKDB_WRITE_LOCK:
         rows = conn.execute(
             """
-            SELECT
-                status,
-                COUNT(*)                           AS count,
-                COALESCE(SUM(total_amount), 0.0)   AS revenue
-            FROM orders
-            WHERE tenant_id = ?
-              AND created_at >= ?
-              AND created_at <= ?
-            GROUP BY status
+            SELECT 'delivered' AS status, COALESCE(SUM(delivered_count), 0) AS count, COALESCE(SUM(delivered_revenue), 0.0) AS revenue
+            FROM hourly_tenant_metrics WHERE tenant_id = ? AND period >= ? AND period <= ?
+            UNION ALL
+            SELECT 'shipped' AS status, COALESCE(SUM(shipped_count), 0) AS count, COALESCE(SUM(shipped_revenue), 0.0) AS revenue
+            FROM hourly_tenant_metrics WHERE tenant_id = ? AND period >= ? AND period <= ?
+            UNION ALL
+            SELECT 'placed' AS status, COALESCE(SUM(placed_count), 0) AS count, COALESCE(SUM(placed_revenue), 0.0) AS revenue
+            FROM hourly_tenant_metrics WHERE tenant_id = ? AND period >= ? AND period <= ?
+            UNION ALL
+            SELECT 'cancelled' AS status, COALESCE(SUM(cancelled_count), 0) AS count, COALESCE(SUM(cancelled_revenue), 0.0) AS revenue
+            FROM hourly_tenant_metrics WHERE tenant_id = ? AND period >= ? AND period <= ?
             """,
-            [tenant_id, fd, td],
+            [tenant_id, fd, td, tenant_id, fd, td, tenant_id, fd, td, tenant_id, fd, td],
         ).fetchall()
 
     total_orders = sum(int(row[1]) for row in rows)
@@ -422,3 +429,86 @@ def get_status_breakdown(
         data_freshness_seconds=freshness_secs,
         last_synced_at=last_synced,
     )
+
+
+# ---------------------------------------------------------------------------
+# Bonus B-4 — Config-Driven Metrics Engine
+# ---------------------------------------------------------------------------
+
+def _load_metric_configs() -> dict[str, dict]:
+    cfg_file = Path("config/metrics.yaml")
+    if not cfg_file.exists():
+        return {}
+    with open(cfg_file, "r", encoding="utf-8") as f:
+        data = yaml.safe_load(f) or {}
+    return data.get("metrics", {})
+
+
+@router.get(
+    "/tenants/{tenant_id}/metrics/custom",
+    response_model=list[CustomMetricConfigItem],
+    summary="List available dynamic config-driven metrics (Bonus B-4)",
+)
+def list_custom_metrics(tenant_id: int) -> list[CustomMetricConfigItem]:
+    """Return all dynamic metrics defined in config/metrics.yaml."""
+    cfg = _load_metric_configs()
+    return [
+        CustomMetricConfigItem(
+            name=k,
+            title=v.get("title", k),
+            description=v.get("description", ""),
+            unit=v.get("unit", ""),
+        )
+        for k, v in cfg.items()
+    ]
+
+
+@router.get(
+    "/tenants/{tenant_id}/metrics/custom/{metric_name}",
+    response_model=CustomMetricResponse,
+    summary="Evaluate dynamic config-driven metric (Bonus B-4)",
+)
+def get_custom_metric(
+    tenant_id: int,
+    metric_name: str,
+    from_date: Annotated[str | None, Query(description="Start of window (ISO-8601)")] = None,
+    to_date: Annotated[str | None, Query(description="End of window (ISO-8601)")] = None,
+    conn: duckdb.DuckDBPyConnection = Depends(get_tenant_db),
+    worker: SyncWorker = Depends(get_sync_worker),
+    _ready: None = Depends(require_ready),
+    _rate: None = Depends(check_rate_limit),
+) -> CustomMetricResponse:
+    """Evaluate a metric configured in config/metrics.yaml dynamically without code changes."""
+    cfg = _load_metric_configs()
+    if metric_name not in cfg:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Metric '{metric_name}' not defined in config/metrics.yaml. Available: {list(cfg.keys())}",
+        )
+    m = cfg[metric_name]
+    expr = m["expression"]
+    fd = _parse_date(from_date, _default_from_date())
+    td = _parse_date(to_date, _default_to_date())
+
+    with DUCKDB_WRITE_LOCK:
+        row = conn.execute(
+            f"SELECT COALESCE({expr}, 0.0) FROM hourly_tenant_metrics WHERE period >= ? AND period <= ?",
+            [fd, td],
+        ).fetchone()
+
+    val = float(row[0]) if row and row[0] is not None else 0.0
+    freshness_secs, last_synced = _freshness(worker)
+
+    return CustomMetricResponse(
+        tenant_id=tenant_id,
+        metric_name=metric_name,
+        title=m.get("title", metric_name),
+        description=m.get("description", ""),
+        unit=m.get("unit", ""),
+        value=val,
+        from_date=fd,
+        to_date=td,
+        data_freshness_seconds=freshness_secs,
+        last_synced_at=last_synced,
+    )
+
