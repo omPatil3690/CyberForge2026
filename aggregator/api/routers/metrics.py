@@ -436,7 +436,9 @@ def get_status_breakdown(
 # ---------------------------------------------------------------------------
 
 def _load_metric_configs() -> dict[str, dict]:
-    cfg_file = Path("config/metrics.yaml")
+    cfg_file = Path(__file__).resolve().parent.parent.parent.parent / "config" / "metrics.yaml"
+    if not cfg_file.exists():
+        cfg_file = Path("config/metrics.yaml")
     if not cfg_file.exists():
         return {}
     with open(cfg_file, "r", encoding="utf-8") as f:

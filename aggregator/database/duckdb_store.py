@@ -42,7 +42,7 @@ logger = logging.getLogger(__name__)
 
 DUCKDB_WRITE_LOCK: threading.Lock = threading.Lock()
 
-TENANTS_DIR: Path = Path("data/tenants")
+TENANTS_DIR: Path = Path(__file__).resolve().parent.parent.parent / "data" / "tenants"
 _TENANT_CONNECTIONS: dict[int, duckdb.DuckDBPyConnection] = {}
 _TENANT_LOCK: threading.Lock = threading.Lock()
 

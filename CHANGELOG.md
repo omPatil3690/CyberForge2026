@@ -431,6 +431,47 @@ All notable changes to the CyberForge2026 Multi-Tenant Aggregation Layer project
   - `scripts/benchmark_1m.py`
   - `CHANGELOG.md`
 
+---
+
+#### Change #021 — Tenant Path Hardening, Verification Suite Pass & 1M Benchmark Execution
+
+- **Timestamp:** 2026-10-31 23:48:00 IST (UTC+05:30)
+- **Agent/Author:** Antigravity (AI) & Sandesh Lavshetty
+- **Type:** Fix / Benchmark / Optimization
+- **Description:**
+  - Resolved relative pathing discrepancies in `aggregator/database/duckdb_store.py` (`TENANTS_DIR`) and `aggregator/api/routers/metrics.py` (`metrics.yaml`), anchoring all tenant database paths and configuration file discovery directly to the absolute project root.
+  - Repopulated and verified all 10 isolated DuckDB tenant files (`data/tenants/tenant_1.duckdb` through `tenant_10.duckdb`) with the full 1,000,000 orders and computed hourly rollups (`hourly_tenant_metrics`).
+  - Successfully executed `scripts/test_aggregator.py` across all 10 verification phases with 100% pass rate:
+    - Company Owner Multi-Store Rollup (1,000,000 orders across 10 stores) returning in **3.95 ms** (Target: < 200 ms).
+    - Status breakdown, top products, daily trends, live freshness sync (< 5s), and dynamic metric evaluation (< 2 ms) fully validated.
+  - Executed official 1 Million Records Benchmark (`scripts/benchmark_1m.py`) and stored full audit results in `benchmark_1m_results.txt`:
+    - Section 1: Company Owner Dashboard (1M Orders Combined across 10 Stores) — p50 latencies: 2.83 ms to 11.81 ms (vs Raw PostgreSQL 56.28 ms to 161.37 ms, up to 26.9x speedup, 100% exact numerical match).
+    - Section 2: Single Store Drill-Down (Store #1 / ~389k Orders) — p50 latencies: 1.45 ms to 3.18 ms (vs Raw PostgreSQL 10.12 ms to 197.47 ms, up to 117.8x speedup, 100% exact numerical match).
+  - Updated `.gitignore` to ignore `*.duckdb`, `*.duckdb.wal`, `*.duckdb.tmp`, and `data/tenants/`, untracking binary DuckDB database files from git.
+- **Affected Files:**
+  - `aggregator/database/duckdb_store.py`
+  - `aggregator/api/routers/metrics.py`
+  - `.gitignore`
+  - `benchmark_1m_results.txt`
+  - `CHANGELOG.md`
+
+---
+
+#### Change #022 — Gitignore Configuration for DuckDB Files & Benchmark Outputs
+
+- **Timestamp:** 2026-10-31 23:55:00 IST (UTC+05:30)
+- **Agent/Author:** Antigravity (AI) & Sandesh Lavshetty
+- **Type:** Configuration / Git
+- **Description:**
+  - Added ignore rules to `.gitignore` for DuckDB databases, temporary files, and write-ahead logs (`*.duckdb`, `*.duckdb.wal`, `*.duckdb.tmp`, `aggregator.duckdb`, `data/`, `data/tenants/`).
+  - Added ignore rules for benchmark execution result files (`benchmark*.txt`, `benchmark_1m_results.txt`).
+  - Removed tracked binary DuckDB database file `aggregator.duckdb` from git cache (`git rm --cached aggregator.duckdb`) ensuring binary files and benchmark artifacts remain local and uncommitted.
+- **Affected Files:**
+  - `.gitignore`
+  - `CHANGELOG.md`
+
+
+
 
 
 

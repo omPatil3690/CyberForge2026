@@ -5,4 +5,11 @@ __pycache__/
 *.log
 .env
 system.md
-data
+data/
+data/tenants/
+*.duckdb
+*.duckdb.wal
+*.duckdb.tmp
+aggregator.duckdb
+benchmark*.txt
+benchmark_1m_results.txt
