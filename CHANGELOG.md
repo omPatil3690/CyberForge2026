@@ -191,3 +191,106 @@ All notable changes to the CyberForge2026 Multi-Tenant Aggregation Layer project
   - `CHANGELOG.md`
 
 
+
+---
+
+#### Change #010 — Core Aggregation Layer Initial Implementation
+
+- **Timestamp:** 2026-10-31 15:22:04 IST (UTC+05:30)
+- **Agent/Author:** Antigravity (AI) & Sandesh Lavshetty
+- **Type:** Feature
+- **Description:**
+  - Designed and implemented the full CyberForge Multi-Tenant Aggregation Layer (`aggregator/` package) that sits between the PostgreSQL OLTP database and the dashboard frontend.
+  - **Architecture implemented:** PostgreSQL (OLTP, write-only for dashboard) → Incremental Sync Worker (5s watermark poll via `updated_at`) → DuckDB in-process OLAP replica → FastAPI REST API → Dashboard.
+  - **`aggregator/__init__.py`**: Package root with version metadata.
+  - **`aggregator/config.py`**: Zero-dependency `.env` loader + `Settings` class that exposes `DB_*`, `DATABASE_URL`, `DUCKDB_PATH` (default `./aggregator.duckdb`), `SYNC_INTERVAL_SECONDS` (default 5), and `RATE_LIMIT_PER_MINUTE` (default 60). Module-level `settings` singleton imported everywhere.
+  - **`aggregator/models/schemas.py`**: Pydantic v2 response models for all API endpoints: `SummaryResponse`, `TrendResponse`/`TrendDataPoint`, `TopProductsResponse`/`TopProductItem`, `StatusBreakdownResponse`/`StatusBreakdownItem`, `HealthResponse`, `AdminMetricsResponse`, `RebuildResponse`, `APIInfoResponse`. Decimal→float coercion handled natively.
+  - **`aggregator/database/postgres.py`**: psycopg v3 connection pool (`psycopg_pool.ConnectionPool`, min=1, max=5) with lazy singleton init; `get_pg_connection()` context manager; `close_pool()` for graceful shutdown; `pg_order_count_estimate()` using `pg_class.reltuples` for non-locking row estimates.
+  - **`aggregator/database/duckdb_store.py`**: DuckDB OLAP replica management. Idempotent `init_duckdb()` creates `orders`, `order_items`, `products`, and `sync_state` tables plus covering indexes. `upsert_orders()`, `upsert_order_items()`, `upsert_products()` implement DELETE+INSERT upsert pattern. `get_last_sync_time()` / `set_last_sync_time()` manage the watermark in `sync_state`. Module-level `DUCKDB_WRITE_LOCK` (threading.Lock) serialises all writes and reads to satisfy DuckDB's single-writer constraint.
+  - **`aggregator/sync/worker.py`**: `SyncWorker` background daemon thread. On first run with empty DuckDB: full paginated sync of products (all at once), orders (10k batches), and order_items (10k batches). Incremental mode: polls `orders WHERE updated_at > watermark LIMIT 5000`, upserts changed orders, cascades to `order_items` for changed order IDs, advances watermark to `max(updated_at)`. Exposes `is_ready`, `last_sync_time`, `last_sync_row_count`, `sync_lag_seconds`, `total_syncs` for health/metrics endpoints. `trigger_rebuild()` truncates replica and resets for a full re-sync.
+  - **`aggregator/api/dependencies.py`**: `get_duckdb()` FastAPI dependency returning the global DuckDB connection; `get_sync_worker()` + `require_ready()` for service readiness gating; sliding-window per-tenant rate limiter (`check_rate_limit(tenant_id)`) using `collections.deque` with a 60-second window.
+  - **`aggregator/api/routers/metrics.py`**: All four tenant dashboard endpoints (FR-1 through FR-4), each enforcing tenant isolation (`WHERE tenant_id = ?`), accepting `from_date`/`to_date` query params (defaulting to last 30 days), including freshness metadata, and rate-limiting per tenant.
+    - `GET /tenants/{tenant_id}/metrics/summary` — count, total revenue, avg order value.
+    - `GET /tenants/{tenant_id}/metrics/trend` — hourly/daily time-series with DATE_TRUNC.
+    - `GET /tenants/{tenant_id}/metrics/top-products` — JOIN order_items + products, ranked by revenue (limit 1–50).
+    - `GET /tenants/{tenant_id}/metrics/breakdown/status` — order counts/revenue/percentage per status.
+  - **`aggregator/api/routers/admin.py`**: Admin endpoints with rolling latency tracking (deque of last 1000 request durations, p50/p95/p99 percentiles).
+    - `GET /admin/health` — status, freshness, sync lag, DuckDB row count, pg estimate, uptime.
+    - `GET /admin/metrics` — latency percentiles, sync stats, cache hit ratio (always 1.0, all reads from DuckDB).
+    - `POST /admin/rebuild` — truncates replica, resets watermarks, triggers full re-sync.
+  - **`aggregator/api/main.py`**: FastAPI app with `asynccontextmanager` lifespan that initialises DuckDB, starts SyncWorker, blocks until `is_ready=True` before serving requests, then stops worker and closes pool on shutdown. CORS configured for all origins. Includes both routers.
+  - **`run_aggregator.py`**: Project-root entry point — `uvicorn aggregator.api.main:app --host 0.0.0.0 --port 8000`.
+  - **`aggregator/requirements.txt`**: Aggregator-specific dependency list (fastapi, uvicorn, duckdb, pydantic, pydantic-settings, python-dotenv, psycopg-pool).
+  - **`requirements.txt`** (root): Appended aggregator dependencies to the existing OLTP dependency list.
+- **Affected Files:**
+  - `aggregator/__init__.py` *(created)*
+  - `aggregator/config.py` *(created)*
+  - `aggregator/models/__init__.py` *(created)*
+  - `aggregator/models/schemas.py` *(created)*
+  - `aggregator/database/__init__.py` *(created)*
+  - `aggregator/database/postgres.py` *(created)*
+  - `aggregator/database/duckdb_store.py` *(created)*
+  - `aggregator/sync/__init__.py` *(created)*
+  - `aggregator/sync/worker.py` *(created)*
+  - `aggregator/api/__init__.py` *(created)*
+  - `aggregator/api/dependencies.py` *(created)*
+  - `aggregator/api/routers/__init__.py` *(created)*
+  - `aggregator/api/routers/metrics.py` *(created)*
+  - `aggregator/api/routers/admin.py` *(created)*
+  - `aggregator/api/main.py` *(created)*
+  - `aggregator/requirements.txt` *(created)*
+  - `run_aggregator.py` *(created)*
+  - `requirements.txt` *(modified — aggregator deps appended)*
+  - `CHANGELOG.md` *(modified — this entry)*
+
+---
+
+#### Change #011 — Environment Configuration for Local PostgreSQL Database
+
+- **Timestamp:** 2026-10-31 15:37:15 IST (UTC+05:30)
+- **Agent/Author:** Antigravity (AI) & Sandesh Lavshetty
+- **Type:** Configuration
+- **Description:**
+  - Configured `.env` file pointing to local PostgreSQL 17 instance (`cyberforge` database, user `postgres`).
+  - Added default configuration for DuckDB storage path (`./aggregator.duckdb`), sync interval (5 seconds), and per-tenant rate limiter (60 req/min).
+- **Affected Files:**
+  - `.env`
+  - `CHANGELOG.md`
+
+---
+
+#### Change #012 — Fix Route Dependency, Add Timezone Support & Implement End-to-End Test Suite
+
+- **Timestamp:** 2026-10-31 16:02:45 IST (UTC+05:30)
+- **Agent/Author:** Antigravity (AI) & Sandesh Lavshetty
+- **Type:** Bug Fix
+- **Description:**
+  - Fixed route dependency scoping error in `aggregator/api/routers/metrics.py` where a lambda default argument caused a `NameError: name 'tenant_id' is not defined` during FastAPI router registration; replaced with direct dependency injection `Depends(check_rate_limit)`.
+  - Added `pytz` and `httpx` to `requirements.txt` to enable DuckDB `TIMESTAMPTZ` parsing and FastAPI test harness execution.
+  - Created automated live verification suite in `scripts/test_aggregator.py` validating all functional requirements: FR-1 (Summary metrics), FR-2 (Hourly/daily trends), FR-3 (Top-N products), FR-4 (Status breakdown), FR-5 (Tenant data isolation), and B-5 (Query latency diagnostics).
+  - Executed live verification against seeded PostgreSQL database (10,000 orders, 17,290 items, 200 products), confirming 100% sync correctness and sub-20ms query execution (p50 latency 16.0ms, subsequent warmed trend queries running in 2.8ms).
+- **Affected Files:**
+  - `aggregator/api/routers/metrics.py`
+  - `requirements.txt`
+  - `scripts/test_aggregator.py`
+  - `CHANGELOG.md`
+
+---
+
+#### Change #013 — Comprehensive 1M Records Benchmark & Correctness Verification Suite
+
+- **Timestamp:** 2026-10-31 16:18:45 IST (UTC+05:30)
+- **Agent/Author:** Antigravity (AI) & Sandesh Lavshetty
+- **Type:** Testing
+- **Description:**
+  - Authored official benchmark and correctness evaluation harness in `scripts/benchmark_1m.py` aligned directly with hackathon targets from `PS.md`.
+  - Implemented multi-iteration latency benchmarking (20+ samples per endpoint) measuring p50, p95, and p99 percentiles for FR-1, FR-2, FR-3, and FR-4.
+  - Built automated side-by-side correctness checker that runs equivalent raw SQL queries against PostgreSQL and asserts a 100% numerical match (order count discrepancy = 0, revenue delta < 1 cent).
+  - Added support for `--generate` (streams 1M synthetic records into PostgreSQL) and `--sync` (forces fresh replica generation).
+  - Integrated scorecard generator formatting Markdown and terminal tables showing p50 query execution, raw PostgreSQL speedup comparison, and database safety metrics.
+- **Affected Files:**
+  - `scripts/benchmark_1m.py`
+  - `CHANGELOG.md`
+
+
+

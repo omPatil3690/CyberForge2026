@@ -1,0 +1,141 @@
+"""
+aggregator/database/postgres.py — PostgreSQL connection helpers for the aggregation layer.
+
+Provides a lightweight connection pool using psycopg (v3) and loads
+credentials from the same .env file consumed by scripts/db.py.
+
+Design decisions:
+  - Uses psycopg.ConnectionPool (connection pool) for safe reuse across the
+    sync worker and potential future concurrent reads.
+  - Pool is created lazily on the first call to ``get_pg_connection()`` and
+    is a module-level singleton.
+  - A plain context-managed connection is returned; callers are responsible
+    for committing / rolling back and closing (returning to pool).
+
+Usage::
+
+    from aggregator.database.postgres import get_pg_connection
+
+    with get_pg_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT now()")
+            row = cur.fetchone()
+"""
+
+from __future__ import annotations
+
+import logging
+import threading
+from contextlib import contextmanager
+from typing import Generator
+
+import psycopg
+from psycopg_pool import ConnectionPool  # type: ignore[import]
+
+from aggregator.config import settings
+
+logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Module-level pool singleton
+# ---------------------------------------------------------------------------
+
+_pool: ConnectionPool | None = None
+_pool_lock = threading.Lock()
+
+_MIN_POOL_SIZE = 1
+_MAX_POOL_SIZE = 5   # Hackathon: keep footprint small
+
+
+def _build_pool() -> ConnectionPool:
+    """Construct and open the psycopg connection pool.
+
+    Returns:
+        An open ``psycopg_pool.ConnectionPool`` instance.
+    """
+    conninfo = settings.pg_conninfo()
+    logger.info(
+        "Creating PostgreSQL connection pool (min=%d, max=%d) → %s:%s/%s",
+        _MIN_POOL_SIZE,
+        _MAX_POOL_SIZE,
+        settings.db_host,
+        settings.db_port,
+        settings.db_name,
+    )
+    pool = ConnectionPool(
+        conninfo=conninfo,
+        min_size=_MIN_POOL_SIZE,
+        max_size=_MAX_POOL_SIZE,
+        open=True,
+    )
+    return pool
+
+
+def get_pool() -> ConnectionPool:
+    """Return (and lazily create) the module-level connection pool.
+
+    Thread-safe: uses a double-checked lock.
+
+    Returns:
+        The shared ``ConnectionPool`` instance.
+    """
+    global _pool  # noqa: PLW0603
+    if _pool is None:
+        with _pool_lock:
+            if _pool is None:
+                _pool = _build_pool()
+    return _pool
+
+
+@contextmanager
+def get_pg_connection() -> Generator[psycopg.Connection, None, None]:
+    """Yield a PostgreSQL connection from the shared pool.
+
+    The connection is returned to the pool automatically when the
+    ``with`` block exits, whether normally or via an exception.
+
+    Yields:
+        A ``psycopg.Connection`` object.  Callers must not close it
+        manually; the pool manages its lifecycle.
+
+    Example::
+
+        with get_pg_connection() as conn:
+            rows = conn.execute("SELECT id FROM orders LIMIT 5").fetchall()
+    """
+    pool = get_pool()
+    with pool.connection() as conn:
+        yield conn
+
+
+def close_pool() -> None:
+    """Close the connection pool and release all connections.
+
+    Should be called during application shutdown (FastAPI lifespan teardown).
+    Safe to call even if the pool was never initialised.
+    """
+    global _pool  # noqa: PLW0603
+    if _pool is not None:
+        logger.info("Closing PostgreSQL connection pool.")
+        _pool.close()
+        _pool = None
+
+
+def pg_order_count_estimate() -> int:
+    """Return a fast (non-locking) approximate row count for ``orders``.
+
+    Uses ``pg_class.reltuples``, which is updated by ANALYZE and AUTOVACUUM.
+    The estimate may lag by minutes but completes in microseconds.
+
+    Returns:
+        Approximate number of rows in the ``orders`` table, or 0 on error.
+    """
+    try:
+        with get_pg_connection() as conn:
+            row = conn.execute(
+                "SELECT reltuples::bigint FROM pg_class WHERE relname = 'orders'"
+            ).fetchone()
+            return int(row[0]) if row and row[0] is not None else 0
+    except Exception as exc:
+        logger.warning("Could not fetch pg order count estimate: %s", exc)
+        return 0
