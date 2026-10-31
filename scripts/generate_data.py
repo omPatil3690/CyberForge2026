@@ -186,9 +186,18 @@ def main():
             tenant_rows = []
             for t_id in range(1, args.tenants + 1):
                 created_at = start_date - timedelta(days=random.randint(10, 180))
-                tenant_rows.append((t_id, f"Store-{t_id:03d} - {random.choice(['Apparel', 'Direct', 'Outlet', 'Goods', 'Boutique'])}", created_at))
+                store_name = (
+                    f"Store-{t_id:03d} - "
+                    f"{random.choice(['Apparel', 'Direct', 'Outlet', 'Goods', 'Boutique'])}"
+                )
+                tenant_rows.append((t_id, 1, store_name, created_at))
 
-            bulk_copy(cur, "tenants", ["id", "name", "created_at"], tenant_rows)
+            bulk_copy(
+                cur,
+                "tenants",
+                ["id", "company_id", "name", "created_at"],
+                tenant_rows,
+            )
             print(f"   -> Inserted {len(tenant_rows)} tenants ({time.time() - t0:.2f}s)")
 
             # -------------------------------------------------------------

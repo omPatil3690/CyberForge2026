@@ -435,7 +435,18 @@ All notable changes to the CyberForge2026 Multi-Tenant Aggregation Layer project
 
 
 
+#### Change #021 — Add Company Ownership Migration for Existing Tenants
 
+- **Timestamp:** 2026-11-01 03:14:02 IST (UTC+05:30)
+- **Agent/Author:** GitHub Copilot (Copilot SDK in VS Code)
+- **Type:** Database / Bug Fix
+- **Description:**
+  - Added an Alembic migration that creates the companies table, adds the company_id foreign key and index to tenants, and assigns existing tenants to company #1 without changing their order data.
+  - Updated synthetic data generation to explicitly associate newly generated tenants with company #1, matching the verification suite's single-company setup.
+- **Affected Files:**
+  - `alembic/versions/002_company_tenant_relationship.py`
+  - `scripts/generate_data.py`
+  - `CHANGELOG.md`
 
 
 
