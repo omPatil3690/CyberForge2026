@@ -137,20 +137,26 @@ def get_tenant_pg_connection(tenant_id: int) -> Generator[psycopg.Connection, No
 
 
 def pg_order_count_estimate() -> int:
-    """Return a fast (non-locking) approximate row count for ``orders``.
+    """Return a fast (non-locking) approximate row count for ``orders`` across
+    all tenant PostgreSQL databases (``cyberforge_tenant_1`` through
+    ``cyberforge_tenant_10``).
 
-    Uses ``pg_class.reltuples``, which is updated by ANALYZE and AUTOVACUUM.
-    The estimate may lag by minutes but completes in microseconds.
+    Uses ``pg_class.reltuples`` in each tenant database, which is updated by
+    ANALYZE and AUTOVACUUM.  The estimate may lag by minutes but completes in
+    microseconds per database.
 
     Returns:
-        Approximate number of rows in the ``orders`` table, or 0 on error.
+        Approximate total number of orders across all tenant databases, or 0
+        on error.
     """
-    try:
-        with get_pg_connection() as conn:
-            row = conn.execute(
-                "SELECT reltuples::bigint FROM pg_class WHERE relname = 'orders'"
-            ).fetchone()
-            return int(row[0]) if row and row[0] is not None else 0
-    except Exception as exc:
-        logger.warning("Could not fetch pg order count estimate: %s", exc)
-        return 0
+    total = 0
+    for tenant_id in range(1, 11):
+        try:
+            with get_tenant_pg_connection(tenant_id) as conn:
+                row = conn.execute(
+                    "SELECT reltuples::bigint FROM pg_class WHERE relname = 'orders'"
+                ).fetchone()
+                total += int(row[0]) if row and row[0] is not None else 0
+        except Exception:
+            pass  # Tenant DB may not exist yet; skip silently
+    return total

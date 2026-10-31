@@ -24,11 +24,10 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from aggregator.api.dependencies import set_duckdb_connection, set_sync_worker
+from aggregator.api.dependencies import set_sync_worker
 from aggregator.api.routers import admin as admin_router
 from aggregator.api.routers import company as company_router
 from aggregator.api.routers import metrics as metrics_router
-from aggregator.database.duckdb_store import init_duckdb
 from aggregator.database.postgres import close_pool
 from aggregator.models.schemas import APIInfoResponse
 from aggregator.sync.worker import SyncWorker
@@ -66,16 +65,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """
     logger.info("=== CyberForge Aggregation Layer — starting up ===")
 
-    # 1. Init DuckDB
-    duck_conn = init_duckdb()
-    set_duckdb_connection(duck_conn)
-
-    # 2. Create and start sync worker
-    worker = SyncWorker(duck_conn)
+    # 1. Create and start sync worker (no global DuckDB — each tenant has its own)
+    worker = SyncWorker()
     set_sync_worker(worker)
     worker.start()
 
-    # 3. Wait for the initial sync to complete before serving requests
+    # 2. Wait for the initial sync to complete before serving requests
     logger.info("Waiting for initial sync to complete…")
     _wait_start = time.monotonic()
     while not worker.is_ready:

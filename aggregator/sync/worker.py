@@ -1,46 +1,53 @@
 """
-aggregator/sync/worker.py — Incremental watermark-based sync worker.
+aggregator/sync/worker.py — True Database-per-Tenant incremental sync worker.
 
-The SyncWorker runs as a background daemon thread and continuously polls
-PostgreSQL for new/updated rows, upserting them into the DuckDB OLAP replica.
+Architecture
+------------
+Each store owner is a tenant.  Each tenant's orders, products, and order_items
+live in their own dedicated PostgreSQL database (``cyberforge_tenant_{id}``)
+and are replicated into their own physically isolated DuckDB file
+(``data/tenants/tenant_{id}.duckdb``).
+
+There is **no** global ``aggregator.duckdb``; every read and write targets the
+per-tenant file exclusively.
 
 Sync strategy
 -------------
-* **Orders (incremental)**: Poll ``orders WHERE updated_at > watermark``
-  in batches of up to 5 000 rows.  After each batch the watermark is
-  advanced to ``max(updated_at)`` of the fetched rows.
-* **Order items (cascaded)**: For every changed order_id, fetch *all*
-  associated ``order_items`` rows and upsert them.  This keeps item data
-  consistent even when a single item within an order is updated.
-* **Products (full sync once)**: Products change rarely; a full sync is
-  performed once on startup and is not repeated unless a rebuild is
-  requested.
-* **Initial full sync**: When DuckDB is empty (first run), paginated
-  ``LIMIT / OFFSET`` batches of 10 000 rows walk the entire ``orders``
-  table before incremental polling begins.
+* **Initial full sync per tenant**: When ``tenant_{id}.duckdb`` has no
+  watermark (first run), paginate through that tenant's dedicated PostgreSQL
+  database using O(1) keyset pagination and write directly into
+  ``data/tenants/tenant_{id}.duckdb``.
+* **Incremental sync per tenant**: After the initial sync, poll each tenant's
+  PostgreSQL database for rows newer than the tenant's watermark and upsert
+  them into the tenant's isolated DuckDB file.
+* **Products (full once per tenant)**: Products rarely change; synced once on
+  startup or rebuild.
+* **Hourly rollup per tenant**: ``hourly_tenant_metrics`` is recomputed inside
+  each tenant's DuckDB file after every sync cycle.
+* **Watermarks per tenant**: Stored in ``sync_state`` inside each tenant's
+  DuckDB file with key ``"orders"`` (tenant-local, not globally shared).
 
 Threading
 ---------
-The worker acquires ``DUCKDB_WRITE_LOCK`` indirectly through the
-``duckdb_store`` helper functions; it must NOT attempt to acquire the lock
-itself to avoid deadlocks.
+A single background thread drives all tenant syncs sequentially.  Each tenant
+has its own ``threading.Lock`` (via ``get_tenant_write_lock``) so that API
+reads on different tenants are never blocked by writes to an unrelated tenant.
 
 State exposed to the API
 ------------------------
 ``SyncWorker`` exposes the following attributes for the health/metrics
 endpoints:
 
-* ``is_ready``              — True once the initial sync is complete.
-* ``last_sync_time``        — UTC datetime of the last completed sync.
-* ``last_sync_row_count``   — Rows touched in the last sync cycle.
-* ``sync_lag_seconds``      — Duration (seconds) of the last cycle.
+* ``is_ready``              — True once ALL tenants have completed initial sync.
+* ``last_sync_time``        — UTC datetime of the last completed full cycle.
+* ``last_sync_row_count``   — Total rows touched across all tenants in last cycle.
+* ``sync_lag_seconds``      — Duration (seconds) of the last full cycle.
 * ``total_syncs``           — Cumulative number of completed cycles.
 * ``startup_time``          — UTC datetime when the worker was started.
 """
 
 from __future__ import annotations
 
-import collections
 import logging
 import threading
 import time
@@ -51,37 +58,63 @@ import duckdb
 
 import aggregator.database.duckdb_store as store
 from aggregator.config import settings
-from aggregator.database.postgres import get_pg_connection
+from aggregator.database.postgres import get_tenant_pg_connection
 
 logger = logging.getLogger(__name__)
 
-_INITIAL_SYNC_BATCH = 50_000   # rows per page during full initial sync (high-speed keyset)
-_INCREMENTAL_LIMIT = 5_000     # max rows per incremental poll
+_INITIAL_SYNC_BATCH = 50_000   # rows per page during full initial sync (keyset)
+_INCREMENTAL_LIMIT = 5_000     # max rows per incremental poll per tenant
+
+# Canonical list of tenant IDs managed by this worker.
+# Loaded from the ``tenants`` table at startup; see ``_discover_tenant_ids``.
+_DEFAULT_TENANT_IDS: list[int] = list(range(1, 11))  # fallback: tenants 1–10
+
+
+def _discover_tenant_ids() -> list[int]:
+    """Query the first tenant's PostgreSQL database to discover all tenant IDs.
+
+    Falls back to the hard-coded default (1–10) if the query fails, so the
+    worker can still operate even when the tenants table is not yet populated.
+
+    Returns:
+        Sorted list of tenant IDs found in the database.
+    """
+    # We use tenant 1 as a bootstrap connection since it holds the shared
+    # companies/tenants schema alongside the tenant data.
+    try:
+        with get_tenant_pg_connection(1) as conn:
+            rows = conn.execute(
+                "SELECT id FROM tenants ORDER BY id"
+            ).fetchall()
+            if rows:
+                return [int(r[0]) for r in rows]
+    except Exception as exc:
+        logger.warning(
+            "Could not discover tenant IDs from PostgreSQL (using defaults 1–10): %s", exc
+        )
+    return list(_DEFAULT_TENANT_IDS)
 
 
 class SyncWorker:
-    """Background daemon thread that replicates PostgreSQL data into DuckDB.
+    """Background daemon thread that replicates per-tenant PostgreSQL databases
+    into per-tenant isolated DuckDB files.
 
     Args:
-        duckdb_conn: The shared DuckDB connection returned by ``init_duckdb()``.
-        interval:    Polling interval in seconds (overrides settings default).
+        interval: Polling interval in seconds (overrides settings default).
 
     Attributes:
-        is_ready (bool):             True once the initial sync has finished.
-        last_sync_time (datetime):   UTC timestamp of the last completed sync.
-        last_sync_row_count (int):   Rows upserted in the last sync cycle.
-        sync_lag_seconds (float):    Wall-clock duration of the last sync cycle.
-        total_syncs (int):           Cumulative count of sync cycles completed.
+        is_ready (bool):             True once ALL tenants have completed
+                                     their initial sync.
+        last_sync_time (datetime):   UTC timestamp of the last completed cycle.
+        last_sync_row_count (int):   Rows upserted across all tenants in the
+                                     last sync cycle.
+        sync_lag_seconds (float):    Wall-clock duration of the last cycle.
+        total_syncs (int):           Cumulative count of full sync cycles.
         startup_time (datetime):     UTC timestamp when ``start()`` was called.
     """
 
-    def __init__(
-        self,
-        duckdb_conn: duckdb.DuckDBPyConnection,
-        interval: int | None = None,
-    ) -> None:
-        """Initialise the SyncWorker with a DuckDB connection and config."""
-        self._conn = duckdb_conn
+    def __init__(self, interval: int | None = None) -> None:
+        """Initialise the SyncWorker with configuration only (no global DuckDB)."""
         self._interval = interval or settings.sync_interval_seconds
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
@@ -93,6 +126,9 @@ class SyncWorker:
         self.sync_lag_seconds: float = 0.0
         self.total_syncs: int = 0
         self.startup_time: datetime | None = None
+
+        # Discovered/configured tenant IDs — set on first run
+        self._tenant_ids: list[int] = []
 
     # ------------------------------------------------------------------
     # Public API
@@ -130,18 +166,25 @@ class SyncWorker:
         logger.info("SyncWorker stopped.")
 
     def trigger_rebuild(self) -> None:
-        """Reset watermarks and mark the worker as not ready, forcing a full re-sync.
+        """Reset all per-tenant watermarks and mark the worker as not ready,
+        forcing a full re-sync of every tenant database.
 
-        Called by the ``POST /admin/rebuild`` endpoint.  The next iteration of
-        the worker loop will detect the cleared watermark and execute a full
-        paginated sync.
+        Called by the ``POST /admin/rebuild`` endpoint.
         """
-        logger.info("Rebuild triggered — clearing DuckDB replica and watermarks.")
-        store.truncate_all(self._conn)
+        logger.info("Rebuild triggered — clearing all tenant DuckDB replicas and watermarks.")
         self.is_ready = False
         self.last_sync_time = None
         self.last_sync_row_count = 0
         self.total_syncs = 0
+
+        for t_id in (self._tenant_ids or _DEFAULT_TENANT_IDS):
+            try:
+                t_conn = store.get_tenant_duckdb(t_id)
+                t_lock = store.get_tenant_write_lock(t_id)
+                store.truncate_all(t_conn, t_lock)
+                logger.info("Tenant #%d DuckDB truncated for rebuild.", t_id)
+            except Exception as exc:
+                logger.warning("Could not truncate tenant #%d during rebuild: %s", t_id, exc)
 
     # ------------------------------------------------------------------
     # Internal run loop
@@ -150,100 +193,151 @@ class SyncWorker:
     def _run(self) -> None:
         """Main loop executed in the background thread.
 
-        Performs the initial sync on the first iteration, then switches to
-        incremental polling at the configured interval.
+        On the first iteration, discovers all tenant IDs and performs the
+        initial full per-tenant sync.  Subsequent iterations run incremental
+        polling across all tenants.
         """
         first_run = True
         while not self._stop_event.is_set():
             cycle_start = time.monotonic()
             try:
                 if first_run:
-                    self._initial_full_sync()
+                    self._tenant_ids = _discover_tenant_ids()
+                    logger.info(
+                        "Discovered %d tenant(s): %s",
+                        len(self._tenant_ids),
+                        self._tenant_ids,
+                    )
+                    self._initial_full_sync_all()
                     first_run = False
                 else:
-                    self._incremental_sync()
+                    self._incremental_sync_all()
             except Exception as exc:
                 logger.exception("Sync cycle failed: %s", exc)
 
             self.sync_lag_seconds = time.monotonic() - cycle_start
-
-            # Wait for the next cycle (or bail out if stopped)
             self._stop_event.wait(timeout=self._interval)
 
     # ------------------------------------------------------------------
-    # Initial full sync
+    # Initial full sync (all tenants)
     # ------------------------------------------------------------------
 
-    def _initial_full_sync(self) -> None:
-        """Perform a paginated full sync of *all* PostgreSQL data into DuckDB.
+    def _initial_full_sync_all(self) -> None:
+        """Perform a per-tenant full sync for every tenant that lacks a watermark.
 
-        This runs once when DuckDB is empty (no watermark found).  It syncs:
-        1. All ``products`` rows (one shot — they fit in memory easily).
-        2. All ``orders`` rows in batches of ``_INITIAL_SYNC_BATCH``.
-        3. All ``order_items`` rows in batches of ``_INITIAL_SYNC_BATCH``.
+        For each tenant:
+        1. Check if ``tenant_{id}.duckdb`` already has a watermark.
+        2. If not, pull all products, orders, and order_items from
+           ``cyberforge_tenant_{id}`` and write directly into that tenant's
+           isolated DuckDB file.
+        3. Recompute ``hourly_tenant_metrics`` in the tenant's DuckDB.
         """
-        watermark = store.get_last_sync_time(self._conn, "orders")
-        if watermark is not None:
-            # DuckDB already has data — skip full sync and go incremental
+        total_rows = 0
+        all_ready = True
+
+        for t_id in self._tenant_ids:
+            try:
+                rows = self._initial_full_sync_tenant(t_id)
+                total_rows += rows
+            except Exception as exc:
+                logger.error(
+                    "Initial sync failed for tenant #%d: %s — skipping (will retry).", t_id, exc
+                )
+                all_ready = False
+
+        if all_ready:
+            self.is_ready = True
+            self.last_sync_time = datetime.now(tz=timezone.utc)
+            self.last_sync_row_count = total_rows
+            self.total_syncs += 1
             logger.info(
-                "DuckDB has existing data (watermark=%s). Skipping full sync.",
+                "Initial full sync complete across %d tenants (%d total rows).",
+                len(self._tenant_ids),
+                total_rows,
+            )
+        else:
+            # Mark ready anyway so the API can serve partial data; failed
+            # tenants will be retried on the next incremental cycle.
+            self.is_ready = True
+            logger.warning(
+                "Initial sync finished with some tenant failures; API is live but some tenant "
+                "data may be incomplete until the next incremental cycle."
+            )
+
+    def _initial_full_sync_tenant(self, tenant_id: int) -> int:
+        """Perform a full sync for a single tenant.
+
+        Returns:
+            Total number of rows synced into this tenant's DuckDB.
+        """
+        t_conn = store.get_tenant_duckdb(tenant_id)
+        t_lock = store.get_tenant_write_lock(tenant_id)
+
+        watermark = store.get_last_sync_time(t_conn, "orders", t_lock)
+        if watermark is not None:
+            logger.info(
+                "Tenant #%d already has a watermark (%s) — skipping full sync.",
+                tenant_id,
                 watermark,
             )
-            self.is_ready = True
-            return
+            return 0
 
-        logger.info("Starting initial full sync from PostgreSQL…")
-        total_rows = 0
+        logger.info("Starting initial full sync for tenant #%d…", tenant_id)
+        total = 0
 
-        # --- Products (full, single batch) ---
-        total_rows += self._sync_products_full()
+        total += self._sync_products_full_tenant(tenant_id, t_conn, t_lock)
+        total += self._sync_orders_full_tenant(tenant_id, t_conn, t_lock)
+        total += self._sync_order_items_full_tenant(tenant_id, t_conn, t_lock)
+        store.recompute_hourly_metrics(t_conn, t_lock)
 
-        # --- Orders (paginated) ---
-        total_rows += self._sync_orders_full()
+        logger.info(
+            "Initial full sync complete for tenant #%d (%d rows).", tenant_id, total
+        )
+        return total
 
-        # --- Order items (paginated) ---
-        total_rows += self._sync_order_items_full()
-
-        # --- Recompute two-tier privacy-safe hourly rollup ---
-        store.recompute_hourly_metrics(self._conn)
-
-        self.is_ready = True
-        self.last_sync_time = datetime.now(tz=timezone.utc)
-        self.last_sync_row_count = total_rows
-        self.total_syncs += 1
-        logger.info("Initial full sync complete (%d rows).", total_rows)
-
-    def _sync_products_full(self) -> int:
-        """Fetch and upsert all products from PostgreSQL.
+    def _sync_products_full_tenant(
+        self,
+        tenant_id: int,
+        t_conn: duckdb.DuckDBPyConnection,
+        t_lock: threading.Lock,
+    ) -> int:
+        """Fetch all products from tenant's PostgreSQL and upsert into its DuckDB.
 
         Returns:
             Number of product rows synced.
         """
-        logger.info("Syncing all products…")
-        with get_pg_connection() as conn:
+        logger.info("Tenant #%d: Syncing all products…", tenant_id)
+        with get_tenant_pg_connection(tenant_id) as conn:
             rows: list[Any] = conn.execute(
                 "SELECT id, tenant_id, name, category, price, created_at FROM products"
             ).fetchall()
 
-        count = store.upsert_products(self._conn, rows)
-        logger.info("Products synced: %d rows.", count)
+        count = store.upsert_products(t_conn, rows, t_lock)
+        logger.info("Tenant #%d: Products synced: %d rows.", tenant_id, count)
         return count
 
-    def _sync_orders_full(self) -> int:
-        """Paginate through all orders using O(1) keyset pagination and upsert into DuckDB.
-
-        Also records the watermark as ``max(updated_at)`` of all fetched rows.
+    def _sync_orders_full_tenant(
+        self,
+        tenant_id: int,
+        t_conn: duckdb.DuckDBPyConnection,
+        t_lock: threading.Lock,
+    ) -> int:
+        """Paginate all orders from tenant's PostgreSQL into its isolated DuckDB.
 
         Returns:
             Total number of order rows synced.
         """
-        logger.info("Syncing all orders (batch_size=%d, keyset)…", _INITIAL_SYNC_BATCH)
+        logger.info(
+            "Tenant #%d: Syncing all orders (batch_size=%d, keyset)…",
+            tenant_id,
+            _INITIAL_SYNC_BATCH,
+        )
         last_id = 0
         total = 0
         max_updated_at: datetime | None = None
 
         while True:
-            with get_pg_connection() as conn:
+            with get_tenant_pg_connection(tenant_id) as conn:
                 rows = conn.execute(
                     """
                     SELECT id, tenant_id, customer_id, status,
@@ -259,42 +353,53 @@ class SyncWorker:
             if not rows:
                 break
 
-            count = store.upsert_orders(self._conn, rows)
+            count = store.upsert_orders(t_conn, rows, t_lock)
             total += count
             last_id = rows[-1][0]
 
-            # Track the highest updated_at seen so far
             for row in rows:
-                row_updated_at = row[6]  # updated_at is index 6
+                row_updated_at = row[6]
                 if isinstance(row_updated_at, datetime):
                     if row_updated_at.tzinfo is None:
                         row_updated_at = row_updated_at.replace(tzinfo=timezone.utc)
                     if max_updated_at is None or row_updated_at > max_updated_at:
                         max_updated_at = row_updated_at
 
-            logger.info("Orders synced so far: %d (last_id=%d)", total, last_id)
+            logger.info(
+                "Tenant #%d: Orders synced so far: %d (last_id=%d)",
+                tenant_id, total, last_id,
+            )
 
             if len(rows) < _INITIAL_SYNC_BATCH:
-                break  # Last page
+                break
 
         if max_updated_at is not None:
-            store.set_last_sync_time(self._conn, "orders", max_updated_at)
+            store.set_last_sync_time(t_conn, "orders", max_updated_at, t_lock)
 
-        logger.info("Full orders sync complete: %d rows.", total)
+        logger.info("Tenant #%d: Full orders sync complete: %d rows.", tenant_id, total)
         return total
 
-    def _sync_order_items_full(self) -> int:
-        """Paginate through all order_items using O(1) keyset pagination and upsert into DuckDB.
+    def _sync_order_items_full_tenant(
+        self,
+        tenant_id: int,
+        t_conn: duckdb.DuckDBPyConnection,
+        t_lock: threading.Lock,
+    ) -> int:
+        """Paginate all order_items from tenant's PostgreSQL into its isolated DuckDB.
 
         Returns:
             Total number of order_item rows synced.
         """
-        logger.info("Syncing all order_items (batch_size=%d, keyset)…", _INITIAL_SYNC_BATCH)
+        logger.info(
+            "Tenant #%d: Syncing all order_items (batch_size=%d, keyset)…",
+            tenant_id,
+            _INITIAL_SYNC_BATCH,
+        )
         last_id = 0
         total = 0
 
         while True:
-            with get_pg_connection() as conn:
+            with get_tenant_pg_connection(tenant_id) as conn:
                 rows = conn.execute(
                     """
                     SELECT id, order_id, tenant_id, product_id,
@@ -310,39 +415,76 @@ class SyncWorker:
             if not rows:
                 break
 
-            count = store.upsert_order_items(self._conn, rows)
+            count = store.upsert_order_items(t_conn, rows, t_lock)
             total += count
             last_id = rows[-1][0]
 
-            logger.info("Order items synced so far: %d (last_id=%d)", total, last_id)
+            logger.info(
+                "Tenant #%d: Order items synced so far: %d (last_id=%d)",
+                tenant_id, total, last_id,
+            )
 
             if len(rows) < _INITIAL_SYNC_BATCH:
                 break
 
-        logger.info("Full order_items sync complete: %d rows.", total)
+        logger.info(
+            "Tenant #%d: Full order_items sync complete: %d rows.", tenant_id, total
+        )
         return total
 
     # ------------------------------------------------------------------
-    # Incremental sync
+    # Incremental sync (all tenants)
     # ------------------------------------------------------------------
 
-    def _incremental_sync(self) -> None:
-        """Poll PostgreSQL for rows newer than the current watermark and upsert them.
+    def _incremental_sync_all(self) -> None:
+        """Poll all tenants for new/changed rows and upsert them into their
+        respective isolated DuckDB files.
+
+        Each tenant is polled independently; a failure on one tenant does not
+        block the others.
+        """
+        total = 0
+        for t_id in self._tenant_ids:
+            try:
+                total += self._incremental_sync_tenant(t_id)
+            except Exception as exc:
+                logger.warning(
+                    "Incremental sync failed for tenant #%d: %s — will retry.", t_id, exc
+                )
+
+        self.last_sync_time = datetime.now(tz=timezone.utc)
+        self.last_sync_row_count = total
+        self.total_syncs += 1
+        logger.debug("Incremental sync complete across %d tenants (%d rows).",
+                     len(self._tenant_ids), total)
+
+    def _incremental_sync_tenant(self, tenant_id: int) -> int:
+        """Poll a single tenant's PostgreSQL for new orders and sync into DuckDB.
 
         Steps:
-        1. Read ``orders WHERE updated_at > watermark LIMIT 5000``.
-        2. Upsert fetched orders into DuckDB.
-        3. For changed order IDs, fetch and upsert associated ``order_items``.
-        4. Advance the watermark to ``max(updated_at)`` of the fetched batch.
-        """
-        watermark = store.get_last_sync_time(self._conn, "orders")
-        if watermark is None:
-            # Somehow we lost the watermark — fall back to full sync
-            logger.warning("Watermark missing in incremental sync; re-running full sync.")
-            self._initial_full_sync()
-            return
+        1. Read this tenant's watermark from its DuckDB.
+        2. Fetch orders from ``cyberforge_tenant_{id}`` WHERE updated_at > watermark.
+        3. Upsert into ``tenant_{id}.duckdb``.
+        4. Fetch and upsert associated order_items.
+        5. Recompute ``hourly_tenant_metrics`` for this tenant.
+        6. Advance the watermark.
 
-        with get_pg_connection() as conn:
+        Returns:
+            Number of rows upserted for this tenant.
+        """
+        t_conn = store.get_tenant_duckdb(tenant_id)
+        t_lock = store.get_tenant_write_lock(tenant_id)
+
+        watermark = store.get_last_sync_time(t_conn, "orders", t_lock)
+        if watermark is None:
+            # Watermark missing — fall back to full sync for this tenant
+            logger.warning(
+                "Tenant #%d: watermark missing in incremental sync; re-running full sync.",
+                tenant_id,
+            )
+            return self._initial_full_sync_tenant(tenant_id)
+
+        with get_tenant_pg_connection(tenant_id) as conn:
             rows = conn.execute(
                 """
                 SELECT id, tenant_id, customer_id, status,
@@ -356,37 +498,21 @@ class SyncWorker:
             ).fetchall()
 
         if not rows:
-            logger.debug("Incremental sync: no new rows since %s.", watermark)
-            self.last_sync_row_count = 0
-            self.last_sync_time = datetime.now(tz=timezone.utc)
-            self.total_syncs += 1
-            return
+            logger.debug(
+                "Tenant #%d: no new rows since %s.", tenant_id, watermark
+            )
+            return 0
 
-        # Upsert orders into global replica
-        count = store.upsert_orders(self._conn, rows)
+        # Upsert orders into tenant's isolated DuckDB
+        count = store.upsert_orders(t_conn, rows, t_lock)
         total = count
 
         # Fetch and upsert order_items for changed orders
         changed_ids = [row[0] for row in rows]
-        total += self._sync_items_for_orders(changed_ids)
+        total += self._sync_items_for_orders_tenant(tenant_id, t_conn, t_lock, changed_ids)
 
-        # Refresh two-tier privacy-safe hourly rollup on global replica
-        store.recompute_hourly_metrics(self._conn)
-
-        # Route changed orders and items directly to each tenant's isolated database
-        tenant_batches: dict[int, list] = collections.defaultdict(list)
-        for r in rows:
-            tenant_batches[r[1]].append(r)
-
-        for t_id, t_rows in tenant_batches.items():
-            try:
-                t_conn = store.get_tenant_duckdb(t_id)
-                store.upsert_orders(t_conn, t_rows)
-                t_changed_ids = [tr[0] for tr in t_rows]
-                self._sync_items_for_tenant_orders(t_conn, t_changed_ids)
-                store.recompute_hourly_metrics(t_conn)
-            except Exception as exc:
-                logger.warning("Could not sync incremental orders to tenant #%d: %s", t_id, exc)
+        # Recompute privacy-safe hourly rollup in this tenant's DuckDB
+        store.recompute_hourly_metrics(t_conn, t_lock)
 
         # Advance watermark
         max_updated_at: datetime | None = None
@@ -399,48 +525,36 @@ class SyncWorker:
                     max_updated_at = row_updated_at
 
         if max_updated_at is not None:
-            store.set_last_sync_time(self._conn, "orders", max_updated_at)
+            store.set_last_sync_time(t_conn, "orders", max_updated_at, t_lock)
 
-        self.last_sync_time = datetime.now(tz=timezone.utc)
-        self.last_sync_row_count = total
-        self.total_syncs += 1
         logger.info(
-            "Incremental sync complete: %d order rows, watermark → %s.",
-            count,
-            max_updated_at,
+            "Tenant #%d: Incremental sync — %d orders, watermark → %s.",
+            tenant_id, count, max_updated_at,
         )
+        return total
 
-    def _sync_items_for_tenant_orders(self, conn: duckdb.DuckDBPyConnection, order_ids: list[int]) -> int:
-        """Fetch and upsert order_items directly into a tenant's isolated DuckDB."""
-        if not order_ids:
-            return 0
-        placeholders = ",".join(["%s"] * len(order_ids))
-        with get_pg_connection() as pg_conn:
-            rows = pg_conn.execute(
-                f"""
-                SELECT id, order_id, tenant_id, product_id,
-                       quantity, unit_price, total_price, created_at
-                FROM order_items
-                WHERE order_id IN ({placeholders})
-                """,
-                order_ids,
-            ).fetchall()
-        return store.upsert_order_items(conn, rows)
-
-    def _sync_items_for_orders(self, order_ids: list[int]) -> int:
-        """Fetch and upsert all order_items belonging to the given order IDs.
+    def _sync_items_for_orders_tenant(
+        self,
+        tenant_id: int,
+        t_conn: duckdb.DuckDBPyConnection,
+        t_lock: threading.Lock,
+        order_ids: list[int],
+    ) -> int:
+        """Fetch and upsert order_items from the tenant's PostgreSQL into its DuckDB.
 
         Args:
-            order_ids: List of order primary keys whose items need to be synced.
+            tenant_id: The tenant whose PostgreSQL and DuckDB to use.
+            t_conn:    Open connection to this tenant's DuckDB.
+            t_lock:    Write lock for this tenant's DuckDB.
+            order_ids: IDs of orders whose items need to be refreshed.
 
         Returns:
             Number of order_item rows upserted.
         """
         if not order_ids:
             return 0
-
         placeholders = ",".join(["%s"] * len(order_ids))
-        with get_pg_connection() as conn:
+        with get_tenant_pg_connection(tenant_id) as conn:
             rows = conn.execute(
                 f"""
                 SELECT id, order_id, tenant_id, product_id,
@@ -450,5 +564,4 @@ class SyncWorker:
                 """,
                 order_ids,
             ).fetchall()
-
-        return store.upsert_order_items(self._conn, rows)
+        return store.upsert_order_items(t_conn, rows, t_lock)

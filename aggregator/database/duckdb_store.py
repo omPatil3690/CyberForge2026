@@ -37,7 +37,10 @@ from aggregator.config import settings
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Global write lock — ALL callers must acquire this before touching DuckDB
+# Per-tenant write locks — each tenant DuckDB file has its own lock to
+# allow concurrent writes across tenants without serialising them globally.
+# The global DUCKDB_WRITE_LOCK is retained for backward compatibility with
+# any callers that still reference it; it is no longer used for tenant DBs.
 # ---------------------------------------------------------------------------
 
 DUCKDB_WRITE_LOCK: threading.Lock = threading.Lock()
@@ -45,6 +48,25 @@ DUCKDB_WRITE_LOCK: threading.Lock = threading.Lock()
 TENANTS_DIR: Path = Path("data/tenants")
 _TENANT_CONNECTIONS: dict[int, duckdb.DuckDBPyConnection] = {}
 _TENANT_LOCK: threading.Lock = threading.Lock()
+
+# Per-tenant write locks: keyed by tenant_id.  Created lazily alongside the
+# DuckDB connection so that different tenants can be written concurrently.
+_TENANT_WRITE_LOCKS: dict[int, threading.Lock] = {}
+
+
+def get_tenant_write_lock(tenant_id: int) -> threading.Lock:
+    """Return (and lazily create) the write lock for a specific tenant.
+
+    Args:
+        tenant_id: The tenant whose lock is needed.
+
+    Returns:
+        A ``threading.Lock`` dedicated to ``tenant_id``.
+    """
+    with _TENANT_LOCK:
+        if tenant_id not in _TENANT_WRITE_LOCKS:
+            _TENANT_WRITE_LOCKS[tenant_id] = threading.Lock()
+        return _TENANT_WRITE_LOCKS[tenant_id]
 
 # ---------------------------------------------------------------------------
 # DDL: replica schema
@@ -186,7 +208,12 @@ def get_tenant_duckdb(tenant_id: int) -> duckdb.DuckDBPyConnection:
         db_path = str(TENANTS_DIR / f"tenant_{tenant_id}.duckdb")
         conn = duckdb.connect(database=db_path, read_only=False)
 
-        with DUCKDB_WRITE_LOCK:
+        # Use the per-tenant lock (created here if it doesn't exist yet)
+        if tenant_id not in _TENANT_WRITE_LOCKS:
+            _TENANT_WRITE_LOCKS[tenant_id] = threading.Lock()
+        t_lock = _TENANT_WRITE_LOCKS[tenant_id]
+
+        with t_lock:
             conn.execute(_DDL_ORDERS)
             conn.execute(_DDL_ORDER_ITEMS)
             conn.execute(_DDL_PRODUCTS)
@@ -233,18 +260,23 @@ def close_all_tenant_dbs() -> None:
 def get_last_sync_time(
     conn: duckdb.DuckDBPyConnection,
     table_name: str,
+    lock: threading.Lock | None = None,
 ) -> datetime | None:
     """Return the last watermark timestamp recorded for *table_name*.
 
     Args:
         conn:       Open DuckDB connection.
-        table_name: One of ``"orders"``, ``"order_items"``, ``"products"``.
+        table_name: One of ``"orders"``, ``"order_items"``, ``"products"``,
+                    or a per-tenant key like ``"orders_tenant_1"``.
+        lock:       Optional write lock to acquire.  Defaults to
+                    ``DUCKDB_WRITE_LOCK`` when ``None``.
 
     Returns:
         A timezone-aware ``datetime`` (UTC) or ``None`` if the table has never
         been synced (i.e. this is the first run).
     """
-    with DUCKDB_WRITE_LOCK:
+    acquired = lock if lock is not None else DUCKDB_WRITE_LOCK
+    with acquired:
         row = conn.execute(
             "SELECT last_synced_at FROM sync_state WHERE table_name = ?",
             [table_name],
@@ -264,6 +296,7 @@ def set_last_sync_time(
     conn: duckdb.DuckDBPyConnection,
     table_name: str,
     ts: datetime,
+    lock: threading.Lock | None = None,
 ) -> None:
     """Persist the sync watermark for *table_name*.
 
@@ -275,8 +308,11 @@ def set_last_sync_time(
         table_name: Name of the synced PostgreSQL table.
         ts:         The new watermark (typically ``max(updated_at)`` of the
                     most recent batch).
+        lock:       Optional write lock to acquire.  Defaults to
+                    ``DUCKDB_WRITE_LOCK`` when ``None``.
     """
-    with DUCKDB_WRITE_LOCK:
+    acquired = lock if lock is not None else DUCKDB_WRITE_LOCK
+    with acquired:
         conn.execute(
             """
             INSERT OR REPLACE INTO sync_state (table_name, last_synced_at)
@@ -318,6 +354,7 @@ def _rows_to_tuples(rows: Sequence[Any]) -> list[tuple]:
 def upsert_orders(
     conn: duckdb.DuckDBPyConnection,
     rows: Sequence[Any],
+    lock: threading.Lock | None = None,
 ) -> int:
     """Upsert a batch of order rows into the DuckDB ``orders`` table.
 
@@ -331,6 +368,7 @@ def upsert_orders(
     Args:
         conn: Open DuckDB connection.
         rows: Sequence of 7-element iterables matching the column order above.
+        lock: Optional write lock to acquire.  Defaults to ``DUCKDB_WRITE_LOCK``.
 
     Returns:
         Number of rows upserted.
@@ -340,8 +378,9 @@ def upsert_orders(
 
     tuples = _rows_to_tuples(rows)
     ids = [t[0] for t in tuples]
+    acquired = lock if lock is not None else DUCKDB_WRITE_LOCK
 
-    with DUCKDB_WRITE_LOCK:
+    with acquired:
         # Remove stale versions if present
         conn.execute(
             f"DELETE FROM orders WHERE id IN ({','.join('?' * len(ids))})",
@@ -359,6 +398,7 @@ def upsert_orders(
 def upsert_order_items(
     conn: duckdb.DuckDBPyConnection,
     rows: Sequence[Any],
+    lock: threading.Lock | None = None,
 ) -> int:
     """Upsert a batch of order_item rows into the DuckDB ``order_items`` table.
 
@@ -368,6 +408,7 @@ def upsert_order_items(
     Args:
         conn: Open DuckDB connection.
         rows: Sequence of 8-element iterables matching the column order above.
+        lock: Optional write lock to acquire.  Defaults to ``DUCKDB_WRITE_LOCK``.
 
     Returns:
         Number of rows upserted.
@@ -377,8 +418,9 @@ def upsert_order_items(
 
     tuples = _rows_to_tuples(rows)
     ids = [t[0] for t in tuples]
+    acquired = lock if lock is not None else DUCKDB_WRITE_LOCK
 
-    with DUCKDB_WRITE_LOCK:
+    with acquired:
         conn.execute(
             f"DELETE FROM order_items WHERE id IN ({','.join('?' * len(ids))})",
             ids,
@@ -394,6 +436,7 @@ def upsert_order_items(
 def upsert_products(
     conn: duckdb.DuckDBPyConnection,
     rows: Sequence[Any],
+    lock: threading.Lock | None = None,
 ) -> int:
     """Upsert a batch of product rows into the DuckDB ``products`` table.
 
@@ -403,6 +446,7 @@ def upsert_products(
     Args:
         conn: Open DuckDB connection.
         rows: Sequence of 6-element iterables matching the column order above.
+        lock: Optional write lock to acquire.  Defaults to ``DUCKDB_WRITE_LOCK``.
 
     Returns:
         Number of rows upserted.
@@ -412,8 +456,9 @@ def upsert_products(
 
     tuples = _rows_to_tuples(rows)
     ids = [t[0] for t in tuples]
+    acquired = lock if lock is not None else DUCKDB_WRITE_LOCK
 
-    with DUCKDB_WRITE_LOCK:
+    with acquired:
         conn.execute(
             f"DELETE FROM products WHERE id IN ({','.join('?' * len(ids))})",
             ids,
@@ -458,13 +503,18 @@ def duckdb_total_orders() -> int:
     return total
 
 
-def recompute_hourly_metrics(conn: duckdb.DuckDBPyConnection) -> None:
+def recompute_hourly_metrics(conn: duckdb.DuckDBPyConnection, lock: threading.Lock | None = None) -> None:
     """Recompute the two-tier privacy-safe hourly rollup from orders data.
 
     Vectorized in DuckDB: executes in single-digit milliseconds across 1M+ rows.
     Contains zero customer PII (only counts, amounts, and statuses).
+
+    Args:
+        conn: Open DuckDB connection (may be a per-tenant connection).
+        lock: Optional write lock.  Defaults to ``DUCKDB_WRITE_LOCK``.
     """
-    with DUCKDB_WRITE_LOCK:
+    acquired = lock if lock is not None else DUCKDB_WRITE_LOCK
+    with acquired:
         conn.execute("DELETE FROM hourly_tenant_metrics")
         conn.execute(
             """
@@ -504,7 +554,7 @@ def recompute_hourly_metrics(conn: duckdb.DuckDBPyConnection) -> None:
     logger.debug("Recomputed hourly_tenant_metrics summary.")
 
 
-def truncate_all(conn: duckdb.DuckDBPyConnection) -> None:
+def truncate_all(conn: duckdb.DuckDBPyConnection, lock: threading.Lock | None = None) -> None:
     """Drop all replica data and reset sync watermarks.
 
     Used by the admin ``/rebuild`` endpoint to trigger a full re-sync from
@@ -512,8 +562,10 @@ def truncate_all(conn: duckdb.DuckDBPyConnection) -> None:
 
     Args:
         conn: Open DuckDB connection.
+        lock: Optional write lock.  Defaults to ``DUCKDB_WRITE_LOCK``.
     """
-    with DUCKDB_WRITE_LOCK:
+    acquired = lock if lock is not None else DUCKDB_WRITE_LOCK
+    with acquired:
         conn.execute("DELETE FROM hourly_tenant_metrics")
         conn.execute("DELETE FROM order_items")
         conn.execute("DELETE FROM orders")

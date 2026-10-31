@@ -23,8 +23,8 @@ from datetime import datetime, timezone
 import duckdb
 from fastapi import APIRouter, Depends
 
-from aggregator.api.dependencies import get_duckdb, get_sync_worker
-from aggregator.database.duckdb_store import DUCKDB_WRITE_LOCK, duckdb_order_count
+from aggregator.api.dependencies import get_sync_worker
+from aggregator.database.duckdb_store import duckdb_total_orders
 from aggregator.database.postgres import pg_order_count_estimate
 from aggregator.models.schemas import (
     AdminMetricsResponse,
@@ -90,13 +90,11 @@ def _percentile(data: list[float], pct: float) -> float:
     ),
 )
 def health_check(
-    conn: duckdb.DuckDBPyConnection = Depends(get_duckdb),
     worker: SyncWorker = Depends(get_sync_worker),
 ) -> HealthResponse:
     """Return service health metrics.
 
     Args:
-        conn:   Injected DuckDB connection.
         worker: Injected SyncWorker for sync state.
 
     Returns:
@@ -110,7 +108,8 @@ def health_check(
     else:
         freshness = 9999.0
 
-    duck_count = duckdb_order_count(conn)
+    # Count total orders across all isolated tenant DuckDB files
+    duck_count = duckdb_total_orders()
     pg_estimate = pg_order_count_estimate()
     uptime = time.monotonic() - _PROCESS_START
 
