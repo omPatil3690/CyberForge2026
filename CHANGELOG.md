@@ -292,5 +292,20 @@ All notable changes to the CyberForge2026 Multi-Tenant Aggregation Layer project
   - `scripts/benchmark_1m.py`
   - `CHANGELOG.md`
 
+---
+
+#### Change #014 — Comprehensive Project Documentation & Benchmark Scorecard
+
+- **Timestamp:** 2026-10-31 16:58:00 IST (UTC+05:30)
+- **Agent/Author:** Antigravity (AI) & Sandesh Lavshetty
+- **Type:** Documentation
+- **Description:**
+  - Authored comprehensive project `README.md` covering architecture, feature matrix, API reference, and quickstart instructions.
+  - Embedded live verification suite results (`scripts/test_aggregator.py`) demonstrating HTTP 200 responses, strict tenant data isolation, and sub-20ms latencies.
+  - Embedded 1,000,000 synthetic records benchmark results (`scripts/benchmark_1m.py`), documenting side-by-side performance scorecard comparing DuckDB p50 latencies against raw PostgreSQL (13.9x to 30.1x speedup) and 100% OLTP database read offload.
+- **Affected Files:**
+  - `README.md`
+  - `CHANGELOG.md`
+
 
 
