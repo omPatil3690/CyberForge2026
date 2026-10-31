@@ -1,0 +1,544 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>CyberForge — Executive Multi-Tenant Analytics Dashboard</title>
+  
+  <!-- Tailwind CSS CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          colors: {
+            obsidian: '#0b0f19',
+            slateDark: '#111827',
+            cyanNeon: '#06b6d4',
+            emeraldNeon: '#10b981',
+            violetNeon: '#8b5cf6'
+          }
+        }
+      }
+    }
+  </script>
+
+  <!-- ApexCharts CDN -->
+  <script src="https://cdn.jsdelivr.net/npm/apexcharts"></script>
+
+  <!-- Lucide Icons CDN -->
+  <script src="https://unpkg.com/lucide@latest"></script>
+
+  <!-- Custom Dashboard CSS -->
+  <link rel="stylesheet" href="/static/css/dashboard.css">
+</head>
+<body class="bg-[#0b0f19] text-gray-100 min-h-screen flex flex-col antialiased selection:bg-cyan-500/30 selection:text-cyan-200">
+
+  <!-- TOP HEADER -->
+  <header class="sticky top-0 z-50 border-b border-gray-800/80 bg-[#0b0f19]/80 backdrop-blur-xl px-4 lg:px-8 py-3.5 transition-all">
+    <div class="max-w-7xl mx-auto flex flex-col md:flex-row items-center justify-between gap-4">
+      
+      <!-- Logo & System Status Badge -->
+      <div class="flex items-center gap-3.5 w-full md:w-auto justify-between md:justify-start">
+        <div class="flex items-center gap-3">
+          <div class="w-10 h-10 rounded-xl bg-gradient-to-br from-cyan-500 to-blue-600 flex items-center justify-center shadow-lg shadow-cyan-500/20 ring-1 ring-cyan-400/40">
+            <i data-lucide="shield-check" class="w-5 h-5 text-white"></i>
+          </div>
+          <div>
+            <div class="flex items-center gap-2">
+              <span class="font-extrabold tracking-tight text-lg bg-gradient-to-r from-white via-gray-200 to-gray-400 bg-clip-text text-transparent">CYBERFORGE</span>
+              <span class="text-[10px] uppercase font-bold tracking-wider px-2 py-0.5 rounded bg-cyan-500/10 text-cyan-400 border border-cyan-500/30">OLAP 2.0</span>
+            </div>
+            <div class="text-xs text-gray-400 flex items-center gap-1.5 mt-0.5">
+              <span class="relative flex h-2 w-2">
+                <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                <span class="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
+              </span>
+              <span>1,000,000 Records • Real-Time Incremental Sync</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Mobile Context indicator -->
+        <div class="md:hidden">
+          <span id="mobile-context-badge" class="text-[11px] font-semibold px-2 py-0.5 rounded bg-cyan-500/20 text-cyan-300">10 Stores</span>
+        </div>
+      </div>
+
+      <!-- Controls: Context Switcher, Presets, Auto-Refresh -->
+      <div class="flex flex-wrap items-center gap-2.5 w-full md:w-auto justify-end">
+        
+        <!-- Context Selector: Company vs Store -->
+        <div class="relative">
+          <select id="store-selector" class="bg-gray-900 border border-gray-700/80 hover:border-cyan-500/50 text-gray-200 text-xs font-medium rounded-lg px-3 py-2 pr-8 appearance-none focus:outline-none focus:ring-1 focus:ring-cyan-500 cursor-pointer shadow-sm transition-all">
+            <option value="company" selected>🏢 All 10 Stores (Company Rollup)</option>
+            <option value="1">🏬 Store #1 (Flagship • ~389k Orders)</option>
+            <option value="2">🏬 Store #2 (~194k Orders)</option>
+            <option value="3">🏬 Store #3 (~130k Orders)</option>
+            <option value="4">🏬 Store #4 (~97k Orders)</option>
+            <option value="5">🏬 Store #5 (~78k Orders)</option>
+            <option value="6">🏬 Store #6 (~65k Orders)</option>
+            <option value="7">🏬 Store #7 (~55k Orders)</option>
+            <option value="8">🏬 Store #8 (~48k Orders)</option>
+            <option value="9">🏬 Store #9 (~43k Orders)</option>
+            <option value="10">🏬 Store #10 (Boutique • ~27k Orders)</option>
+          </select>
+          <div class="pointer-events-none absolute inset-y-0 right-0 flex items-center px-2 text-gray-400">
+            <i data-lucide="chevron-down" class="w-4 h-4"></i>
+          </div>
+        </div>
+
+        <!-- Date Range Presets -->
+        <div class="flex items-center bg-gray-900/90 p-1 rounded-lg border border-gray-800 text-xs">
+          <button data-preset="7d" class="date-preset-btn px-2.5 py-1 rounded text-gray-400 hover:text-white transition-all">7D</button>
+          <button data-preset="30d" class="date-preset-btn px-2.5 py-1 rounded text-gray-400 hover:text-white transition-all">30D</button>
+          <button data-preset="90d" class="date-preset-btn px-2.5 py-1 rounded text-gray-400 hover:text-white transition-all">90D</button>
+          <button data-preset="all" class="date-preset-btn px-2.5 py-1 rounded bg-cyan-500/20 text-cyan-400 border border-cyan-500/50 font-medium transition-all">All 2026 (1M)</button>
+        </div>
+
+        <!-- Refresh Controls -->
+        <div class="flex items-center gap-1.5">
+          <select id="refresh-interval-select" class="bg-gray-900 border border-gray-800 text-gray-400 text-xs rounded-lg px-2.5 py-2 appearance-none focus:outline-none focus:ring-1 focus:ring-cyan-500 cursor-pointer">
+            <option value="5000" selected>⚡ Live (5s)</option>
+            <option value="10000">⚡ 10s</option>
+            <option value="30000">⚡ 30s</option>
+            <option value="0">Paused</option>
+          </select>
+
+          <button id="btn-manual-refresh" title="Refresh Now" class="p-2 rounded-lg bg-gray-900 hover:bg-gray-800 text-gray-300 hover:text-cyan-400 border border-gray-800 hover:border-cyan-500/40 transition-all">
+            <i id="refresh-icon" data-lucide="refresh-cw" class="w-4 h-4"></i>
+          </button>
+        </div>
+
+      </div>
+
+    </div>
+  </header>
+
+  <!-- SUBHEADER / STATUS STRIP -->
+  <div class="bg-gray-950/60 border-b border-gray-800/60 px-4 lg:px-8 py-2 text-xs">
+    <div class="max-w-7xl mx-auto flex flex-wrap items-center justify-between gap-2">
+      <div class="flex items-center gap-2">
+        <span class="text-gray-400">Viewing Scope:</span>
+        <span id="context-badge" class="text-xs font-semibold px-2.5 py-0.5 rounded-full bg-cyan-500/10 text-cyan-400 border border-cyan-500/30">
+          Company Owner Rollup (All 10 Stores / 1M Orders)
+        </span>
+        <span id="isolation-badge" class="text-gray-400 hidden sm:inline-block">
+          Cross-Tenant OLAP Rollup (10 DuckDB Replicas)
+        </span>
+      </div>
+      <div class="flex items-center gap-4 text-gray-400">
+        <div class="flex items-center gap-1">
+          <i data-lucide="activity" class="w-3.5 h-3.5 text-emerald-400"></i>
+          <span id="render-latency-badge" class="font-mono text-gray-300">Calculating…</span>
+        </div>
+        <div class="flex items-center gap-1">
+          <i data-lucide="clock" class="w-3.5 h-3.5 text-cyan-400"></i>
+          <span id="metric-freshness" class="font-mono text-gray-300">0.0s lag</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- MAIN DASHBOARD CONTENT -->
+  <main class="flex-1 max-w-7xl w-full mx-auto px-4 lg:px-8 py-6 space-y-6">
+
+    <!-- 1. KPI RIBBON -->
+    <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+      
+      <!-- Total Revenue -->
+      <div class="glass-panel rounded-2xl p-5 relative overflow-hidden group">
+        <div class="flex items-center justify-between text-gray-400 text-xs font-medium uppercase tracking-wider mb-2">
+          <span>Total Gross Revenue</span>
+          <div class="w-8 h-8 rounded-lg bg-cyan-500/10 text-cyan-400 flex items-center justify-center border border-cyan-500/20 group-hover:scale-110 transition-transform">
+            <i data-lucide="dollar-sign" class="w-4 h-4"></i>
+          </div>
+        </div>
+        <div id="metric-revenue" class="num-metric text-2xl lg:text-3xl font-extrabold text-white tracking-tight mb-1">
+          $0.00
+        </div>
+        <div class="flex items-center gap-1.5 text-xs text-emerald-400 font-medium">
+          <i data-lucide="trending-up" class="w-3.5 h-3.5"></i>
+          <span>Aggregated across all stores</span>
+        </div>
+        <div class="absolute -right-6 -bottom-6 w-24 h-24 bg-cyan-500/5 rounded-full blur-xl pointer-events-none"></div>
+      </div>
+
+      <!-- Combined Orders -->
+      <div class="glass-panel rounded-2xl p-5 relative overflow-hidden group">
+        <div class="flex items-center justify-between text-gray-400 text-xs font-medium uppercase tracking-wider mb-2">
+          <span>Processed Orders</span>
+          <div class="w-8 h-8 rounded-lg bg-violet-500/10 text-violet-400 flex items-center justify-center border border-violet-500/20 group-hover:scale-110 transition-transform">
+            <i data-lucide="shopping-bag" class="w-4 h-4"></i>
+          </div>
+        </div>
+        <div id="metric-orders" class="num-metric text-2xl lg:text-3xl font-extrabold text-white tracking-tight mb-1">
+          0
+        </div>
+        <div class="flex items-center gap-1.5 text-xs text-gray-400">
+          <i data-lucide="layers" class="w-3.5 h-3.5 text-violet-400"></i>
+          <span>Full 1M synthetic catalog</span>
+        </div>
+        <div class="absolute -right-6 -bottom-6 w-24 h-24 bg-violet-500/5 rounded-full blur-xl pointer-events-none"></div>
+      </div>
+
+      <!-- Average Order Value (AOV) -->
+      <div class="glass-panel rounded-2xl p-5 relative overflow-hidden group">
+        <div class="flex items-center justify-between text-gray-400 text-xs font-medium uppercase tracking-wider mb-2">
+          <span>Avg Order Value (AOV)</span>
+          <div class="w-8 h-8 rounded-lg bg-emerald-500/10 text-emerald-400 flex items-center justify-center border border-emerald-500/20 group-hover:scale-110 transition-transform">
+            <i data-lucide="bar-chart-2" class="w-4 h-4"></i>
+          </div>
+        </div>
+        <div id="metric-aov" class="num-metric text-2xl lg:text-3xl font-extrabold text-white tracking-tight mb-1">
+          $0.00
+        </div>
+        <div class="flex items-center gap-1.5 text-xs text-gray-400">
+          <i data-lucide="check-circle" class="w-3.5 h-3.5 text-emerald-400"></i>
+          <span>High-margin basket size</span>
+        </div>
+        <div class="absolute -right-6 -bottom-6 w-24 h-24 bg-emerald-500/5 rounded-full blur-xl pointer-events-none"></div>
+      </div>
+
+      <!-- Real-Time OLAP Latency -->
+      <div class="glass-panel rounded-2xl p-5 relative overflow-hidden group border-cyan-500/30">
+        <div class="flex items-center justify-between text-gray-400 text-xs font-medium uppercase tracking-wider mb-2">
+          <span>DuckDB Analytical Latency</span>
+          <div class="w-8 h-8 rounded-lg bg-cyan-500/20 text-cyan-300 flex items-center justify-center border border-cyan-500/40 group-hover:scale-110 transition-transform">
+            <i data-lucide="zap" class="w-4 h-4"></i>
+          </div>
+        </div>
+        <div id="metric-query-latency" class="num-metric text-2xl lg:text-3xl font-extrabold text-cyan-400 tracking-tight mb-1">
+          0.00 ms
+        </div>
+        <div class="flex items-center gap-1.5 text-xs text-cyan-300/90 font-medium">
+          <i data-lucide="award" class="w-3.5 h-3.5 text-cyan-400"></i>
+          <span>SLA &lt; 200 ms (Up to 26.9x speedup)</span>
+        </div>
+        <div class="absolute -right-6 -bottom-6 w-24 h-24 bg-cyan-500/10 rounded-full blur-xl pointer-events-none"></div>
+      </div>
+
+    </div>
+
+    <!-- 2. PRIMARY CHARTS (VELOCITY & STATUS BREAKDOWN) -->
+    <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+      
+      <!-- Trend Chart (2 Cols) -->
+      <div class="lg:col-span-2 glass-panel rounded-2xl p-5">
+        <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-4">
+          <div>
+            <h3 class="font-bold text-gray-100 text-base flex items-center gap-2">
+              <i data-lucide="trending-up" class="w-4 h-4 text-cyan-400"></i>
+              Revenue & Order Volume Velocity Trend
+            </h3>
+            <p class="text-xs text-gray-400">Dual-axis timeseries showing daily revenue trajectory against order throughput</p>
+          </div>
+          <div class="flex items-center gap-3 text-xs">
+            <span class="flex items-center gap-1.5 text-cyan-400 font-medium"><span class="w-2.5 h-2.5 rounded-full bg-cyan-400"></span>Revenue</span>
+            <span class="flex items-center gap-1.5 text-violet-400 font-medium"><span class="w-2.5 h-2.5 rounded-full bg-violet-400"></span>Orders</span>
+          </div>
+        </div>
+        <div id="chart-trend" class="w-full"></div>
+      </div>
+
+      <!-- Status Breakdown Donut (1 Col) -->
+      <div class="glass-panel rounded-2xl p-5 flex flex-col justify-between">
+        <div>
+          <h3 class="font-bold text-gray-100 text-base flex items-center gap-2 mb-1">
+            <i data-lucide="pie-chart" class="w-4 h-4 text-emerald-400"></i>
+            Order Fulfillment Breakdown
+          </h3>
+          <p class="text-xs text-gray-400 mb-2">Real-time status proportions across current scope</p>
+          <div id="chart-status" class="w-full"></div>
+        </div>
+
+        <!-- Status Legend Details -->
+        <div class="grid grid-cols-2 gap-2 text-xs border-t border-gray-800/80 pt-3 mt-2">
+          <div class="p-2 rounded-lg bg-gray-900/60 border border-gray-800/50">
+            <div class="text-gray-400 flex items-center gap-1 mb-0.5">
+              <span class="w-2 h-2 rounded-full bg-emerald-500"></span>Delivered
+            </div>
+            <div id="status-val-delivered" class="font-mono font-semibold text-gray-200">0</div>
+          </div>
+          <div class="p-2 rounded-lg bg-gray-900/60 border border-gray-800/50">
+            <div class="text-gray-400 flex items-center gap-1 mb-0.5">
+              <span class="w-2 h-2 rounded-full bg-cyan-500"></span>Shipped
+            </div>
+            <div id="status-val-shipped" class="font-mono font-semibold text-gray-200">0</div>
+          </div>
+          <div class="p-2 rounded-lg bg-gray-900/60 border border-gray-800/50">
+            <div class="text-gray-400 flex items-center gap-1 mb-0.5">
+              <span class="w-2 h-2 rounded-full bg-amber-500"></span>Placed
+            </div>
+            <div id="status-val-placed" class="font-mono font-semibold text-gray-200">0</div>
+          </div>
+          <div class="p-2 rounded-lg bg-gray-900/60 border border-gray-800/50">
+            <div class="text-gray-400 flex items-center gap-1 mb-0.5">
+              <span class="w-2 h-2 rounded-full bg-rose-500"></span>Cancelled
+            </div>
+            <div id="status-val-cancelled" class="font-mono font-semibold text-gray-200">0</div>
+          </div>
+        </div>
+
+      </div>
+
+    </div>
+
+    <!-- 3. SECONDARY SECTION (TOP PRODUCTS & PHYSICAL ISOLATION TOPOLOGY) -->
+    <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+
+      <!-- Top 10 Bestselling Products Leaderboard -->
+      <div class="glass-panel rounded-2xl p-5 flex flex-col justify-between">
+        <div>
+          <div class="flex items-center justify-between mb-4">
+            <div>
+              <h3 class="font-bold text-gray-100 text-base flex items-center gap-2">
+                <i data-lucide="award" class="w-4 h-4 text-cyan-400"></i>
+                Bestselling Products Leaderboard
+              </h3>
+              <p class="text-xs text-gray-400">Ranked by total revenue contribution</p>
+            </div>
+            <span class="text-[11px] font-mono px-2 py-0.5 rounded bg-gray-800 text-gray-400 border border-gray-700">Top 6</span>
+          </div>
+
+          <div id="chart-top-products" class="w-full mb-4"></div>
+
+          <div class="overflow-x-auto">
+            <table class="w-full text-left text-xs">
+              <thead>
+                <tr class="border-b border-gray-800 text-gray-400 uppercase tracking-wider font-semibold">
+                  <th class="py-2 px-3">Rank</th>
+                  <th class="py-2 px-3">Product Name</th>
+                  <th class="py-2 px-3 text-right">Units Sold</th>
+                  <th class="py-2 px-3 text-right">Revenue</th>
+                </tr>
+              </thead>
+              <tbody id="table-top-products-body">
+                <!-- Dynamically populated -->
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- Physical Air-Gap Isolation Topology -->
+      <div class="glass-panel rounded-2xl p-5 flex flex-col justify-between">
+        <div>
+          <div class="flex items-center justify-between mb-3">
+            <div>
+              <h3 class="font-bold text-gray-100 text-base flex items-center gap-2">
+                <i data-lucide="server" class="w-4 h-4 text-emerald-400"></i>
+                Physical Database Air-Gap Architecture
+              </h3>
+              <p class="text-xs text-gray-400">Dedicated file per tenant on DuckDB + PostgreSQL 17</p>
+            </div>
+            <span class="text-[10px] uppercase font-bold px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/30">
+              10/10 Isolated
+            </span>
+          </div>
+
+          <!-- Store Grid -->
+          <div class="grid grid-cols-2 sm:grid-cols-5 gap-2.5 my-3">
+            <div class="p-2.5 rounded-xl bg-gray-900/80 border border-cyan-500/40 text-center">
+              <div class="text-[10px] text-cyan-400 font-bold uppercase">Store 1</div>
+              <div class="text-xs font-mono font-bold text-white mt-0.5">~389k</div>
+              <div class="text-[9px] text-gray-400">Flagship</div>
+            </div>
+            <div class="p-2.5 rounded-xl bg-gray-900/60 border border-gray-800 text-center">
+              <div class="text-[10px] text-gray-400 font-bold uppercase">Store 2</div>
+              <div class="text-xs font-mono font-bold text-white mt-0.5">~194k</div>
+              <div class="text-[9px] text-gray-500">Active</div>
+            </div>
+            <div class="p-2.5 rounded-xl bg-gray-900/60 border border-gray-800 text-center">
+              <div class="text-[10px] text-gray-400 font-bold uppercase">Store 3</div>
+              <div class="text-xs font-mono font-bold text-white mt-0.5">~130k</div>
+              <div class="text-[9px] text-gray-500">Active</div>
+            </div>
+            <div class="p-2.5 rounded-xl bg-gray-900/60 border border-gray-800 text-center">
+              <div class="text-[10px] text-gray-400 font-bold uppercase">Store 4</div>
+              <div class="text-xs font-mono font-bold text-white mt-0.5">~97k</div>
+              <div class="text-[9px] text-gray-500">Active</div>
+            </div>
+            <div class="p-2.5 rounded-xl bg-gray-900/60 border border-gray-800 text-center">
+              <div class="text-[10px] text-gray-400 font-bold uppercase">Store 5</div>
+              <div class="text-xs font-mono font-bold text-white mt-0.5">~78k</div>
+              <div class="text-[9px] text-gray-500">Active</div>
+            </div>
+            <div class="p-2.5 rounded-xl bg-gray-900/60 border border-gray-800 text-center">
+              <div class="text-[10px] text-gray-400 font-bold uppercase">Store 6</div>
+              <div class="text-xs font-mono font-bold text-white mt-0.5">~65k</div>
+              <div class="text-[9px] text-gray-500">Active</div>
+            </div>
+            <div class="p-2.5 rounded-xl bg-gray-900/60 border border-gray-800 text-center">
+              <div class="text-[10px] text-gray-400 font-bold uppercase">Store 7</div>
+              <div class="text-xs font-mono font-bold text-white mt-0.5">~55k</div>
+              <div class="text-[9px] text-gray-500">Active</div>
+            </div>
+            <div class="p-2.5 rounded-xl bg-gray-900/60 border border-gray-800 text-center">
+              <div class="text-[10px] text-gray-400 font-bold uppercase">Store 8</div>
+              <div class="text-xs font-mono font-bold text-white mt-0.5">~48k</div>
+              <div class="text-[9px] text-gray-500">Active</div>
+            </div>
+            <div class="p-2.5 rounded-xl bg-gray-900/60 border border-gray-800 text-center">
+              <div class="text-[10px] text-gray-400 font-bold uppercase">Store 9</div>
+              <div class="text-xs font-mono font-bold text-white mt-0.5">~43k</div>
+              <div class="text-[9px] text-gray-500">Active</div>
+            </div>
+            <div class="p-2.5 rounded-xl bg-gray-900/60 border border-gray-800 text-center">
+              <div class="text-[10px] text-gray-400 font-bold uppercase">Store 10</div>
+              <div class="text-xs font-mono font-bold text-white mt-0.5">~27k</div>
+              <div class="text-[9px] text-gray-500">Boutique</div>
+            </div>
+          </div>
+
+          <!-- Architecture Specs -->
+          <div class="space-y-2 mt-4 text-xs">
+            <div class="flex items-center justify-between p-2 rounded-lg bg-gray-900/40 border border-gray-800/60">
+              <span class="text-gray-400">DuckDB Tenant Replicas:</span>
+              <span class="font-mono text-cyan-400">data/tenants/tenant_*.duckdb</span>
+            </div>
+            <div class="flex items-center justify-between p-2 rounded-lg bg-gray-900/40 border border-gray-800/60">
+              <span class="text-gray-400">OLTP PostgreSQL DBs:</span>
+              <span class="font-mono text-emerald-400">cyberforge_tenant_1..10</span>
+            </div>
+            <div class="flex items-center justify-between p-2 rounded-lg bg-gray-900/40 border border-gray-800/60">
+              <span class="text-gray-400">Data Freshness Guarantee:</span>
+              <span class="font-mono text-violet-400">&lt; 5.0 seconds (SyncWorker)</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="pt-4 border-t border-gray-800/60 text-xs text-gray-400 flex items-center gap-2">
+          <i data-lucide="shield" class="w-4 h-4 text-emerald-400 flex-shrink-0"></i>
+          <span>Zero cross-tenant bleed: queries are physically partitioned at storage engine layer.</span>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- 4. DYNAMIC METRICS & OBSERVABILITY RADAR -->
+    <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+
+      <!-- Dynamic Metrics Cards (Bonus B-4) -->
+      <div class="glass-panel rounded-2xl p-5">
+        <div class="flex items-center justify-between mb-3">
+          <h3 class="font-bold text-gray-100 text-base flex items-center gap-2">
+            <i data-lucide="cpu" class="w-4 h-4 text-violet-400"></i>
+            Dynamic Metrics Engine (YAML)
+          </h3>
+          <span class="text-[10px] uppercase font-bold px-2 py-0.5 rounded bg-violet-500/10 text-violet-400 border border-violet-500/30">
+            Bonus B-4
+          </span>
+        </div>
+        <p class="text-xs text-gray-400 mb-4">Evaluated on-the-fly from <code class="text-cyan-300">config/metrics.yaml</code> in &lt; 2 ms</p>
+
+        <div class="space-y-3">
+          <div class="p-3.5 rounded-xl bg-gray-900/80 border border-gray-800/80 flex items-center justify-between">
+            <div>
+              <div class="font-semibold text-gray-200 text-xs">Cancellation Rate</div>
+              <div class="text-[11px] text-gray-400 mt-0.5">Threshold: &lt; 10.0%</div>
+            </div>
+            <div class="text-right">
+              <div id="custom-val-cancellation" class="font-mono font-bold text-lg text-emerald-400">--</div>
+              <span class="text-[9px] font-semibold text-emerald-400 px-1.5 py-0.2 rounded bg-emerald-500/10 border border-emerald-500/20">Optimal</span>
+            </div>
+          </div>
+
+          <div class="p-3.5 rounded-xl bg-gray-900/80 border border-gray-800/80 flex items-center justify-between">
+            <div>
+              <div class="font-semibold text-gray-200 text-xs">Fulfillment Rate</div>
+              <div class="text-[11px] text-gray-400 mt-0.5">Target: &gt; 60.0%</div>
+            </div>
+            <div class="text-right">
+              <div id="custom-val-fulfillment" class="font-mono font-bold text-lg text-cyan-400">--</div>
+              <span class="text-[9px] font-semibold text-cyan-400 px-1.5 py-0.2 rounded bg-cyan-500/10 border border-cyan-500/20">Exceeding SLA</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- System Observability & Latency Percentiles (Bonus B-5) (2 Cols) -->
+      <div class="lg:col-span-2 glass-panel rounded-2xl p-5">
+        <div class="flex items-center justify-between mb-3">
+          <h3 class="font-bold text-gray-100 text-base flex items-center gap-2">
+            <i data-lucide="gauge" class="w-4 h-4 text-cyan-400"></i>
+            Latency Percentiles & OLTP Protection Radar
+          </h3>
+          <span class="text-[10px] uppercase font-bold px-2 py-0.5 rounded bg-cyan-500/10 text-cyan-400 border border-cyan-500/30">
+            Bonus B-5
+          </span>
+        </div>
+        <p class="text-xs text-gray-400 mb-4">Rolling analytical query percentiles and database safety telemetry</p>
+
+        <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 text-center mb-4">
+          <div class="p-3 rounded-xl bg-gray-900/80 border border-cyan-500/30">
+            <div class="text-[10px] uppercase text-gray-400 font-semibold">p50 Latency</div>
+            <div id="obs-latency-p50" class="num-metric text-xl font-bold text-cyan-400 mt-1">--</div>
+            <div class="text-[9px] text-gray-400 mt-0.5">&lt; 200 ms SLA</div>
+          </div>
+          <div class="p-3 rounded-xl bg-gray-900/80 border border-cyan-500/30">
+            <div class="text-[10px] uppercase text-gray-400 font-semibold">p95 Latency</div>
+            <div id="obs-latency-p95" class="num-metric text-xl font-bold text-cyan-400 mt-1">--</div>
+            <div class="text-[9px] text-gray-400 mt-0.5">&lt; 200 ms SLA</div>
+          </div>
+          <div class="p-3 rounded-xl bg-gray-900/80 border border-cyan-500/30">
+            <div class="text-[10px] uppercase text-gray-400 font-semibold">p99 Latency</div>
+            <div id="obs-latency-p99" class="num-metric text-xl font-bold text-cyan-400 mt-1">--</div>
+            <div class="text-[9px] text-gray-400 mt-0.5">&lt; 200 ms SLA</div>
+          </div>
+          <div class="p-3 rounded-xl bg-gray-900/80 border border-emerald-500/30">
+            <div class="text-[10px] uppercase text-gray-400 font-semibold">OLAP Hit Ratio</div>
+            <div id="obs-cache-ratio" class="num-metric text-xl font-bold text-emerald-400 mt-1">100%</div>
+            <div class="text-[9px] text-emerald-400 mt-0.5">0% PG CPU Load</div>
+          </div>
+        </div>
+
+        <div class="grid grid-cols-1 sm:grid-cols-3 gap-2.5 text-xs text-gray-400">
+          <div class="flex items-center justify-between p-2 rounded-lg bg-gray-900/40 border border-gray-800">
+            <span>DuckDB Replicas Total:</span>
+            <span id="obs-duck-orders" class="font-mono text-gray-200">1,000,000</span>
+          </div>
+          <div class="flex items-center justify-between p-2 rounded-lg bg-gray-900/40 border border-gray-800">
+            <span>PostgreSQL Est. Total:</span>
+            <span id="obs-pg-orders" class="font-mono text-gray-200">1,000,000</span>
+          </div>
+          <div class="flex items-center justify-between p-2 rounded-lg bg-gray-900/40 border border-gray-800">
+            <span>Replication Lag:</span>
+            <span id="obs-freshness-lag" class="font-mono text-cyan-400">0.00s</span>
+          </div>
+        </div>
+
+      </div>
+
+    </div>
+
+  </main>
+
+  <!-- FOOTER -->
+  <footer class="border-t border-gray-800/80 bg-[#0b0f19] px-4 lg:px-8 py-4 text-xs text-gray-500 mt-auto">
+    <div class="max-w-7xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-3">
+      <div class="flex items-center gap-2">
+        <span class="font-semibold text-gray-300">CYBERFORGE 2026</span>
+        <span>•</span>
+        <span>Enterprise Multi-Tenant Analytical Aggregation Engine</span>
+      </div>
+      <div class="flex items-center gap-4 text-gray-400">
+        <span>Dual-Engine: DuckDB + PostgreSQL 17</span>
+        <span>•</span>
+        <span>Physical Database Air-Gap</span>
+        <span>•</span>
+        <a href="/docs" target="_blank" class="text-cyan-400 hover:underline">API Docs</a>
+      </div>
+    </div>
+  </footer>
+
+  <!-- Lucide Icons Trigger -->
+  <script>
+    lucide.createIcons();
+  </script>
+
+  <!-- Dashboard Controller -->
+  <script src="/static/js/dashboard.js"></script>
+</body>
+</html>

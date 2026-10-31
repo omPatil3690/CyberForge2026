@@ -18,11 +18,13 @@ from __future__ import annotations
 import logging
 import time
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import AsyncGenerator
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
 
 from aggregator.api.dependencies import set_duckdb_connection, set_sync_worker
 from aggregator.api.routers import admin as admin_router
@@ -145,6 +147,25 @@ app.include_router(company_router.router)
 app.include_router(admin_router.router)
 
 # ---------------------------------------------------------------------------
+# Static Assets & Executive Dashboard
+# ---------------------------------------------------------------------------
+
+STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
+if STATIC_DIR.exists():
+    app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+
+    @app.get("/dashboard", include_in_schema=False)
+    def dashboard_view() -> FileResponse:
+        """Serve the CyberForge Executive Multi-Tenant Analytics Dashboard."""
+        return FileResponse(str(STATIC_DIR / "index.html"))
+
+    @app.get("/ui", include_in_schema=False)
+    def ui_view() -> FileResponse:
+        """Alias for /dashboard."""
+        return FileResponse(str(STATIC_DIR / "index.html"))
+
+
+# ---------------------------------------------------------------------------
 # Root endpoint
 # ---------------------------------------------------------------------------
 
@@ -185,6 +206,9 @@ def root() -> APIInfoResponse:
                 "health":  "GET  /admin/health",
                 "metrics": "GET  /admin/metrics",
                 "rebuild": "POST /admin/rebuild",
+            },
+            "ui": {
+                "dashboard": "GET /dashboard",
             },
         },
     )

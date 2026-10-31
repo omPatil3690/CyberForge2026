@@ -428,3 +428,29 @@ All notable changes to the CyberForge2026 Multi-Tenant Aggregation Layer project
 - **Affected Files:**
   - `scripts/benchmark_1m.py`
   - `CHANGELOG.md`
+
+---
+
+#### Change #021 — CyberForge Executive Analytics Dashboard Implementation
+
+- **Timestamp:** 2026-11-01 00:13:00 IST (UTC+05:30)
+- **Agent/Author:** Antigravity (AI) & Sandesh Lavshetty
+- **Type:** Feature / UI / Frontend
+- **Description:**
+  - Designed and built the CyberForge Executive Multi-Tenant Analytics Dashboard in `aggregator/static/index.html`, `aggregator/static/css/dashboard.css`, and `aggregator/static/js/dashboard.js`.
+  - Implemented Obsidian Dark Glassmorphic styling (`backdrop-blur-md`, `#0b0f19` canvas, neon cyan and emerald telemetry accents) with responsive desktop and mobile layouts.
+  - Built interactive top navigation with context switcher for Company Owner Rollup (all 10 stores and 1,000,000 orders combined) and individual Store Drill-Down (Store #1 through Store #10).
+  - Built 4 primary KPI cards: Total Gross Revenue ($518.1M+), Processed Orders (1,000,000), Average Order Value ($518.15), and Real-Time Analytical Latency (sub-5ms with SLA target badge).
+  - Integrated ApexCharts visualizations:
+    - Dual-axis timeseries chart showing daily revenue velocity and order throughput.
+    - Radial donut chart displaying order status distributions (`delivered`, `shipped`, `placed`, `cancelled`).
+    - Horizontal ranking chart and table for top-selling products by revenue.
+  - Integrated dynamic metrics engine (Bonus B-4) evaluating `cancellation_rate` (7.01%) and `fulfillment_rate` (65.14%) from `config/metrics.yaml`.
+  - Integrated system observability radar (Bonus B-5) reporting live rolling p50/p95/p99 query latencies, 100% DuckDB OLAP hit ratio, and replication lag.
+  - Mounted static assets and web UI routes (`/dashboard`, `/ui`, `/static`) directly in `aggregator/api/main.py`.
+- **Affected Files:**
+  - `aggregator/api/main.py`
+  - `aggregator/static/index.html`
+  - `aggregator/static/css/dashboard.css`
+  - `aggregator/static/js/dashboard.js`
+  - `CHANGELOG.md`
