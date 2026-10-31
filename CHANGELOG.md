@@ -90,3 +90,58 @@ All notable changes to the CyberForge2026 Multi-Tenant Aggregation Layer project
   - Established convention where historical changes start at the top (Change #001) and all future changes are appended strictly to the bottom of the file.
 - **Affected Files:**
   - `CHANGELOG.md`
+
+---
+
+#### Change #006 — Adopt Alembic for Database Migrations
+
+- **Timestamp:** 2026-10-31 13:00:00 IST (UTC+05:30)
+- **Agent/Author:** Antigravity
+- **Type:** Database
+- **Description:**
+  - Adopted and configured Alembic as the official schema migration management framework.
+  - Installed `alembic` and `sqlalchemy` into the local virtual environment and updated `requirements.txt`.
+  - Configured `alembic.ini` and `alembic/env.py` to dynamically construct the PostgreSQL database connection URL from `.env` via `scripts/db.py`.
+  - Authored baseline revision `alembic/versions/001_initial_schema.py` covering all tables (`tenants`, `customers`, `products`, `orders`, `order_items`), foreign keys with cascade rules, check constraints, and composite indexes.
+  - Refactored `scripts/migrate.py` as an ergonomic CLI wrapper over Alembic commands (`up`, `down`, `status`, `create`).
+  - Verified static SQL generation with offline migration check (`alembic upgrade head --sql`).
+- **Affected Files:**
+  - `alembic.ini`
+  - `alembic/env.py`
+  - `alembic/script.py.mako`
+  - `alembic/versions/001_initial_schema.py`
+  - `scripts/migrate.py`
+  - `requirements.txt`
+  - `migrations/` (removed legacy folder)
+  - `CHANGELOG.md`
+
+---
+
+#### Change #007 — Fix PostgreSQL Authentication URL in Environment Configuration
+
+- **Timestamp:** 2026-10-31 13:06:00 IST (UTC+05:30)
+- **Agent/Author:** Antigravity
+- **Type:** Configuration
+- **Description:**
+  - Diagnosed connection failure (`FATAL: role "seetara9966" does not exist`) caused by a misplaced credential token in `.env`.
+  - Corrected `DATABASE_URL` in `.env` to properly place the username before the colon and the password after (`postgresql://postgres:seetara9966@localhost:5432/cyberforge`).
+  - Cleared unmanaged empty tables and executed `alembic upgrade head`, successfully initializing `alembic_version` and all initial schema tables.
+- **Affected Files:**
+  - `.env`
+  - `CHANGELOG.md`
+
+---
+
+#### Change #008 — Generate Baseline Multi-Tenant Synthetic Dataset
+
+- **Timestamp:** 2026-10-31 13:12:00 IST (UTC+05:30)
+- **Agent/Author:** Antigravity
+- **Type:** Testing
+- **Description:**
+  - Enhanced `scripts/generate_data.py` CLI default resolution to pull database configuration directly from `scripts/db.py` when flags are omitted.
+  - Executed `scripts/generate_data.py` generating 10,000 orders and 17,523 order items across 5 tenants, 200 products, and 750 customers into PostgreSQL in 0.42 seconds.
+  - Executed `scripts/verify_data.py` validating Zipfian power-law skew (Tenant #1: 47.1%, Tenant #2: 21.5%, Tenant #3: 14.3%, Tenant #4: 9.4%, Tenant #5: 7.6%) and realistic status distribution.
+  - Computed and established baseline query results for FR-1 (7-day range aggregates) and FR-3 (Top 5 products by revenue).
+- **Affected Files:**
+  - `scripts/generate_data.py`
+  - `CHANGELOG.md`

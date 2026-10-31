@@ -132,17 +132,18 @@ def bulk_copy(cursor, table_name: str, columns: list[str], rows_generator):
 
 
 def main():
+    db_cfg = get_db_config()
     parser = argparse.ArgumentParser(description="Multi-Tenant Synthetic Data Generator for PostgreSQL")
     parser.add_argument("--tenants", type=int, default=5, help="Number of tenants (default: 5)")
     parser.add_argument("--orders", type=int, default=10000, help="Total number of orders (default: 10,000)")
     parser.add_argument("--products-per-tenant", type=int, default=40, help="Products per tenant (default: 40)")
     parser.add_argument("--customers-per-tenant", type=int, default=150, help="Customers per tenant (default: 150)")
     parser.add_argument("--days", type=int, default=60, help="Historical time window in days (default: 60)")
-    parser.add_argument("--db-name", type=str, default="cyberforge", help="PostgreSQL database name (default: cyberforge)")
-    parser.add_argument("--db-user", type=str, default=os.getenv("USER", "postgres"), help="PostgreSQL user")
-    parser.add_argument("--db-host", type=str, default="localhost", help="PostgreSQL host (default: localhost)")
-    parser.add_argument("--db-port", type=int, default=5432, help="PostgreSQL port (default: 5432)")
-    parser.add_argument("--db-password", type=str, default="", help="PostgreSQL password")
+    parser.add_argument("--db-name", type=str, default=db_cfg["dbname"], help=f"PostgreSQL database name (default: {db_cfg['dbname']})")
+    parser.add_argument("--db-user", type=str, default=db_cfg["user"], help=f"PostgreSQL user (default: {db_cfg['user']})")
+    parser.add_argument("--db-host", type=str, default=db_cfg["host"], help=f"PostgreSQL host (default: {db_cfg['host']})")
+    parser.add_argument("--db-port", type=int, default=db_cfg["port"], help=f"PostgreSQL port (default: {db_cfg['port']})")
+    parser.add_argument("--db-password", type=str, default=db_cfg["password"], help="PostgreSQL password")
     args = parser.parse_args()
 
     conn_info = f"dbname={args.db_name} user={args.db_user} host={args.db_host} port={args.db_port}"
