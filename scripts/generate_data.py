@@ -178,6 +178,16 @@ def main():
             print("1. Truncating existing tables...")
             cur.execute("TRUNCATE TABLE order_items, orders, products, customers, tenants RESTART IDENTITY CASCADE;")
 
+            # Company ownership is control-plane metadata and must survive
+            # dataset resets so company-owner APIs can resolve all tenants.
+            cur.execute(
+                """
+                INSERT INTO companies (id, name)
+                VALUES (1, 'Global Retail Corp')
+                ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name
+                """
+            )
+
             # -------------------------------------------------------------
             # Generate Tenants
             # -------------------------------------------------------------
@@ -188,7 +198,11 @@ def main():
                 created_at = start_date - timedelta(days=random.randint(10, 180))
                 tenant_rows.append((t_id, f"Store-{t_id:03d} - {random.choice(['Apparel', 'Direct', 'Outlet', 'Goods', 'Boutique'])}", created_at))
 
-            bulk_copy(cur, "tenants", ["id", "name", "created_at"], tenant_rows)
+            tenant_rows = [
+                (t_id, name, created_at, 1)
+                for t_id, name, created_at in tenant_rows
+            ]
+            bulk_copy(cur, "tenants", ["id", "name", "created_at", "company_id"], tenant_rows)
             print(f"   -> Inserted {len(tenant_rows)} tenants ({time.time() - t0:.2f}s)")
 
             # -------------------------------------------------------------
