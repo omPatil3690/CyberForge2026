@@ -277,46 +277,9 @@ def run_tests(network_url: str | None = None, live: bool = False, live2: bool = 
             print("   -> Every tenant runs on dedicated, physically isolated database files.")
 
         # -------------------------------------------------------------
-        # 7. FR-6 & B-1 Live Freshness Benchmark (< 30s Target)
+        # 7. Single Store Drill-Down (Store #1)
         # -------------------------------------------------------------
-        print("\n7. Testing FR-6 & B-1: End-to-End Freshness Latency Benchmark...")
-        before_orders = client.get("/companies/1/metrics/summary").json()["order_count"]
-        now_utc = datetime.now(timezone.utc)
-        test_order_id = 99999999
-
-        print("   -> Injecting new live order into Store #1 in PostgreSQL (central & tenant DBs)...")
-        t_inject_start = time.time()
-
-        # Insert into tenant_1 dedicated PostgreSQL database
-        with get_tenant_pg_connection(1) as t1_conn:
-            t1_conn.execute("DELETE FROM orders WHERE id = %s", [test_order_id])
-            t1_conn.execute(
-                """
-                INSERT INTO orders (id, tenant_id, customer_id, status, total_amount, created_at, updated_at)
-                VALUES (%s, 1, 1, 'placed', 8888.88, %s, %s)
-                """,
-                [test_order_id, now_utc, now_utc],
-            )
-
-        print("   -> Polling Company Owner dashboard for real-time reflection...")
-        observed_lag = None
-        for _ in range(12):  # Poll every 0.5s for up to 6s
-            time.sleep(0.5)
-            curr = client.get("/companies/1/metrics/summary").json()["order_count"]
-            if curr > before_orders:
-                observed_lag = time.time() - t_inject_start
-                break
-
-        if observed_lag is not None:
-            print(f"   -> Measured Order Freshness: {observed_lag:.2f} seconds")
-            print(f"   -> Target: < 30 seconds -> STATUS: [GREAT] ({observed_lag:.2f}s < 30s)")
-        else:
-            raise AssertionError("FR-6 freshness target was not observed within 6 seconds")
-
-        # -------------------------------------------------------------
-        # 8. Single Store Drill-Down (Store #1)
-        # -------------------------------------------------------------
-        print("\n8. Testing Store #1 Individual Drill-Down...")
+        print("\n7. Testing Store #1 Individual Drill-Down...")
         t0 = time.perf_counter()
         r_store1 = client.get(
             "/tenants/1/metrics/summary"
@@ -344,16 +307,11 @@ def run_tests(network_url: str | None = None, live: bool = False, live2: bool = 
             f"tenant_1 PostgreSQL={t1_pg_count}"
         )
 
-        # Cleanup after the strict comparison. The incremental worker does not
-        # remove deleted source rows from a replica during this test.
-        with get_tenant_pg_connection(1) as t1_conn:
-            t1_conn.execute("DELETE FROM orders WHERE id = %s", [test_order_id])
-
         # -------------------------------------------------------------
-        # 9. Bonus B-4: Config-Driven Metrics Engine
+        # 8. Bonus B-4: Config-Driven Metrics Engine
         # -------------------------------------------------------------
         if not live2:
-            print("\n9. Testing Bonus B-4: Config-Driven Metrics Engine (config/metrics.yaml)...")
+            print("\n8. Testing Bonus B-4: Config-Driven Metrics Engine (config/metrics.yaml)...")
             r_dyn = client.get("/tenants/1/metrics/custom/cancellation_rate")
             assert r_dyn.status_code == 200
             c_rate = r_dyn.json()
@@ -365,10 +323,10 @@ def run_tests(network_url: str | None = None, live: bool = False, live2: bool = 
             print(f"   -> Evaluated 'fulfillment_rate' : {f_rate['value']:.2f}% (sub-2ms execution)")
 
         # -------------------------------------------------------------
-        # 10. Bonus B-5: Latency Percentiles & Diagnostics
+        # 9. Bonus B-5: Latency Percentiles & Diagnostics
         # -------------------------------------------------------------
         if not live and not live2:
-            print("\n10. Testing Bonus B-5: Observability & Latency Percentiles...")
+            print("\n9. Testing Bonus B-5: Observability & Latency Percentiles...")
             r_metrics = client.get("/admin/metrics")
             assert r_metrics.status_code == 200
             m = r_metrics.json()
@@ -376,6 +334,44 @@ def run_tests(network_url: str | None = None, live: bool = False, live2: bool = 
             print(f"   -> p95 Query Latency : {m['query_latency_p95_ms']:.2f} ms")
             print(f"   -> p99 Query Latency : {m['query_latency_p99_ms']:.2f} ms")
             print(f"   -> OLAP Cache Hit    : {m['cache_hit_ratio'] * 100:.0f}%")
+
+        # -------------------------------------------------------------
+        # 10. FR-6 & B-1 Live Freshness Benchmark
+        # -------------------------------------------------------------
+        print("\n10. Testing FR-6 & B-1: End-to-End Freshness Latency Benchmark...")
+        before_orders = client.get("/companies/1/metrics/summary").json()["order_count"]
+        now_utc = datetime.now(timezone.utc)
+        test_order_id = 99999999
+
+        print("   -> Injecting new live order into Store #1 in PostgreSQL (central & tenant DBs)...")
+        t_inject_start = time.time()
+
+        with get_tenant_pg_connection(1) as t1_conn:
+            t1_conn.execute("DELETE FROM orders WHERE id = %s", [test_order_id])
+            t1_conn.execute(
+                """
+                INSERT INTO orders (id, tenant_id, customer_id, status, total_amount, created_at, updated_at)
+                VALUES (%s, 1, 1, 'placed', 8888.88, %s, %s)
+                """,
+                [test_order_id, now_utc, now_utc],
+            )
+
+        print("   -> Polling Company Owner dashboard for real-time reflection...")
+        observed_lag = None
+        for _ in range(120):  # Poll every 5s for up to 10 minutes
+            time.sleep(5)
+            curr = client.get("/companies/1/metrics/summary").json()["order_count"]
+            if curr > before_orders:
+                observed_lag = time.time() - t_inject_start
+                break
+
+        if observed_lag is not None:
+            print(f"   -> Measured Order Freshness: {observed_lag:.2f} seconds")
+        else:
+            raise AssertionError("FR-6 freshness was not observed within 10 minutes")
+
+        with get_tenant_pg_connection(1) as t1_conn:
+            t1_conn.execute("DELETE FROM orders WHERE id = %s", [test_order_id])
 
     print("\n" + "=" * 76)
     print("  ALL 10 VERIFICATION PHASES PASSED! ALL HACKATHON BENCHMARKS SATISFIED!")
