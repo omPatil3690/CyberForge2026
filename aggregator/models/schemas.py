@@ -357,3 +357,33 @@ class CustomMetricResponse(FreshnessMixin):
     to_date: datetime
 
 
+# ---------------------------------------------------------------------------
+# Live Order Simulation & Freshness Polling Schemas
+# ---------------------------------------------------------------------------
+
+class SimulateOrderRequest(BaseModel):
+    """Request body for POST /admin/simulate-order."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    tenant_id: int = Field(default=1, ge=1, le=10, description="Tenant/store ID to inject order into.")
+    amount: float = Field(default=450.00, gt=0, description="Order total amount in USD.")
+    status: str = Field(default="placed", description="Order status ('placed', 'shipped', 'delivered', 'cancelled').")
+    customer_id: int = Field(default=1, ge=1, description="Customer ID for the order.")
+
+
+class SimulateOrderResponse(BaseModel):
+    """Response body for POST /admin/simulate-order."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    status: str = Field(default="injected", description="Status confirmation token.")
+    order_id: int = Field(..., description="ID of the newly created order in PostgreSQL.")
+    tenant_id: int = Field(..., description="Store/tenant ID.")
+    amount: float = Field(..., description="Order total amount in USD.")
+    order_status: str = Field(..., description="Order status.")
+    injected_at: datetime = Field(..., description="UTC timestamp when order was inserted.")
+    message: str = Field(..., description="Human-readable summary.")
+
+
+

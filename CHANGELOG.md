@@ -431,6 +431,75 @@ All notable changes to the CyberForge2026 Multi-Tenant Aggregation Layer project
   - `scripts/benchmark_1m.py`
   - `CHANGELOG.md`
 
+---
+
+#### Change #021 — Executive Analytics Dashboard & Live Ingestion Freshness Lab
+
+- **Timestamp:** 2026-11-01 05:28:00 IST (UTC+05:30)
+- **Agent/Author:** Antigravity (AI) & Sandesh Lavshetty
+- **Type:** Feature / UI / Benchmark
+- **Description:**
+  - Implemented the CyberForge Executive Multi-Tenant Analytics Dashboard in `aggregator/static/index.html`, `aggregator/static/css/dashboard.css`, and `aggregator/static/js/dashboard.js`.
+  - Built Company Owner Multi-Store Rollup (all 10 stores and 1,000,000 orders combined) and individual Store Drill-Down (Store #1 through Store #10) with interactive topology selection.
+  - Built the Interactive Live Order Ingestion & Freshness Lab (`POST /admin/simulate-order`) allowing users to inject a live e-commerce checkout into PostgreSQL and measure sub-second replication latency to DuckDB.
+  - Implemented a digital stopwatch and adaptive fast-polling radar in `dashboard.js` that triggers burst polling (every 350ms) to detect and measure DuckDB absorption against the `< 30s` SLA target.
+  - Added HTTP latency tracking middleware in `aggregator/api/main.py` recording query durations across `/companies`, `/tenants`, and `/admin`.
+  - Added automatic `.venv` environment detection and transparent re-execution in `run_aggregator.py`.
+  - Added automatic browser redirection from root (`/`) to `/dashboard` for HTTP clients with `text/html` accept headers.
+  - Optimized `aggregator/sync/worker.py` to perform fast incremental delta synchronization on startup when a replica exists with a valid watermark.
+- **Affected Files:**
+  - `aggregator/models/schemas.py`
+  - `aggregator/api/routers/admin.py`
+  - `aggregator/sync/worker.py`
+  - `aggregator/api/main.py`
+  - `run_aggregator.py`
+  - `aggregator/static/index.html`
+  - `aggregator/static/css/dashboard.css`
+  - `aggregator/static/js/dashboard.js`
+  - `CHANGELOG.md`
+
+---
+
+#### Change #022 — Security Console Dark Military Forest Theme Overhaul
+
+- **Timestamp:** 2026-11-01 05:52:00 IST (UTC+05:30)
+- **Agent/Author:** Antigravity (AI) & Sandesh Lavshetty
+- **Type:** UI / Styling Overhaul
+- **Description:**
+  - Overhauled the CyberForge Dashboard to match the reference Gordon Console dark military forest/cybersecurity aesthetic (`#070c09` deep canvas, `#0d1410` cards, `#19271d` subtle border strokes, and `#00e575` bright terminal green accents).
+  - Implemented macOS console window container with traffic light controls (`#ff5f56`, `#ffbd2e`, `#27c93f`), centered tracked title `CYBERFORGE CONSOLE`, and top-right pulsing `● LIVE` status indicator.
+  - Re-architected sidebar navigation matching the reference hierarchy (`OVERVIEW`, `IDENTIFY`, `ASSESS`, `MITIGATE`, `MONITOR`) with active vertical emerald accent indicator (`nav-link-active`), golden-amber brand badge, and airgap status telemetry.
+  - Added semicircular SVG gauge card displaying Risk/Health score with multi-color gradient arc (`#00e575` -> `#eab308` -> `#f97316` -> `#ef4444`) and indicator needle.
+  - Styled top KPI cards matching exact reference icons (star, check shield, bullseye ring, warning bell) for critical stores, processed orders, gross revenue, and P50 query latency.
+  - Built the Recent Security Alerts & Velocity list with high/critical severity badges (`badge-warning`, `badge-critical`) and dark forest ApexCharts dual-axis velocity graph.
+  - Added Security Posture & Engine Health matrix with monospace status badges (`✓ Configured`, `⊘ Enforced`, `↑ COMPLETED`).
+  - Restyled the Live Order Ingestion & Freshness Stopwatch Lab with matching terminal bezel, neon stopwatch counter, and emerald card pulse animations.
+- **Affected Files:**
+  - `aggregator/static/index.html`
+  - `aggregator/static/css/dashboard.css`
+  - `aggregator/static/js/dashboard.js`
+  - `CHANGELOG.md`
+
+---
+
+#### Change #023 — Sidebar Navigation Streamlining & Order Fulfillment Pie Chart Restoration
+
+- **Timestamp:** 2026-11-01 06:18:00 IST (UTC+05:30)
+- **Agent/Author:** Antigravity (AI) & Sandesh Lavshetty
+- **Type:** UI Refactor / Polish
+- **Description:**
+  - Cleaned and streamlined the left sidebar navigation by removing redundant options (`Gordon AI Analyst`, `Cyber Stores`, `Order Velocity`, `Multi-Store Rollup`, and `Sync Architecture`).
+  - Consolidated the remaining sidebar navigation into clean, high-impact sections: `OVERVIEW` (`Dashboard`), `ISOLATION & STORAGE` (`Physical Air-Gap`, `DuckDB Replicas`, `Financial Impact`), and `LIVE BENCHMARK` (`Stopwatch Radar`).
+  - Restored the prominent, dedicated **Order Fulfillment Breakdown Pie Chart** card in the middle section next to the Velocity trend chart.
+  - Re-integrated the full 4-metric status breakdown legend grid (`#status-val-delivered`, `#status-val-shipped`, `#status-val-placed`, `#status-val-cancelled`) displaying live counts and revenue values.
+  - Transferred the Security Posture key/value badges (`WAF / DUCKDB`, `AIRGAP`, `FRESHNESS`, `SCAN STATUS`) into an executive status strip above the charts.
+- **Affected Files:**
+  - `aggregator/static/index.html`
+  - `aggregator/static/js/dashboard.js`
+  - `CHANGELOG.md`
+
+
+
 
 
 

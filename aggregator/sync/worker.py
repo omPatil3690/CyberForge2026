@@ -287,19 +287,28 @@ class SyncWorker:
                         "(SELECT COUNT(*) FROM order_items), "
                         "(SELECT COALESCE(SUM(order_count), 0) FROM hourly_tenant_metrics)"
                     ).fetchone()
-                if (
-                    watermark is not None
-                    and rollup_orders == expected_orders
-                    and actual_orders == expected_orders
-                    and actual_items == expected_items
-                ):
-                    logger.info(
-                        "Tenant #%d already has a validated replica (%s) — "
-                        "skipping full sync.",
-                        tenant_id,
-                        watermark,
-                    )
-                    return 0
+                if watermark is not None and actual_orders > 0:
+                    if (
+                        rollup_orders == expected_orders
+                        and actual_orders == expected_orders
+                        and actual_items == expected_items
+                    ):
+                        logger.info(
+                            "Tenant #%d already has a validated replica (%s) — "
+                            "skipping full sync.",
+                            tenant_id,
+                            watermark,
+                        )
+                        return 0
+                    else:
+                        # Replica exists and has data, but Postgres has newer rows (e.g. simulated orders)
+                        logger.info(
+                            "Tenant #%d has replica with watermark (%s); syncing delta incrementally.",
+                            tenant_id,
+                            watermark,
+                        )
+                        delta = self._incremental_sync_tenant(tenant_id)
+                        return delta
                 logger.warning(
                     "Tenant #%d replica is incomplete; rebuilding atomically.",
                     tenant_id,

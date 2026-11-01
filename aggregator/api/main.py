@@ -18,16 +18,19 @@ from __future__ import annotations
 import logging
 import time
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import AsyncGenerator
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
+from fastapi.staticfiles import StaticFiles
 
 from aggregator.api.dependencies import set_sync_worker
 from aggregator.api.routers import admin as admin_router
 from aggregator.api.routers import company as company_router
 from aggregator.api.routers import metrics as metrics_router
+from aggregator.api.routers.admin import record_latency
 from aggregator.database.postgres import close_pool
 from aggregator.models.schemas import APIInfoResponse
 from aggregator.sync.worker import SyncWorker
@@ -127,6 +130,15 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+@app.middleware("http")
+async def track_latency_middleware(request: Request, call_next):
+    t0 = time.perf_counter()
+    response = await call_next(request)
+    elapsed_ms = (time.perf_counter() - t0) * 1000
+    if request.url.path.startswith(("/companies", "/tenants", "/admin")):
+        record_latency(elapsed_ms)
+    return response
+
 # ---------------------------------------------------------------------------
 # Routers
 # ---------------------------------------------------------------------------
@@ -141,21 +153,44 @@ app.include_router(company_router.router)
 app.include_router(admin_router.router)
 
 # ---------------------------------------------------------------------------
+# Static Assets & Executive Dashboard
+# ---------------------------------------------------------------------------
+
+STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
+if STATIC_DIR.exists():
+    app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+
+    @app.get("/dashboard", include_in_schema=False)
+    def dashboard_view() -> FileResponse:
+        """Serve the CyberForge Executive Multi-Tenant Analytics Dashboard."""
+        return FileResponse(str(STATIC_DIR / "index.html"))
+
+    @app.get("/ui", include_in_schema=False)
+    def ui_view() -> FileResponse:
+        """Alias for /dashboard."""
+        return FileResponse(str(STATIC_DIR / "index.html"))
+
+# ---------------------------------------------------------------------------
 # Root endpoint
 # ---------------------------------------------------------------------------
 
 @app.get(
     "/",
-    response_model=APIInfoResponse,
-    summary="API information",
+    response_model=None,
+    summary="API information or Dashboard redirect",
     tags=["Info"],
 )
-def root() -> APIInfoResponse:
-    """Return basic API metadata and available endpoint groups.
+def root(request: Request) -> APIInfoResponse | RedirectResponse:
+    """Return basic API metadata or redirect browser requests to the UI dashboard.
 
     Returns:
-        ``APIInfoResponse`` describing the API name, version, and endpoints.
+        ``RedirectResponse`` to ``/dashboard`` when called from a web browser,
+        or ``APIInfoResponse`` describing endpoints for API clients.
     """
+    accept = request.headers.get("accept", "")
+    if "text/html" in accept and STATIC_DIR.exists():
+        return RedirectResponse(url="/dashboard", status_code=307)
+
     return APIInfoResponse(
         name="CyberForge Aggregation API",
         version="1.0.0",
@@ -178,9 +213,13 @@ def root() -> APIInfoResponse:
                 "status_breakdown": "GET /companies/{company_id}/metrics/breakdown/status",
             },
             "admin": {
-                "health":  "GET  /admin/health",
-                "metrics": "GET  /admin/metrics",
-                "rebuild": "POST /admin/rebuild",
+                "health":          "GET  /admin/health",
+                "metrics":         "GET  /admin/metrics",
+                "rebuild":         "POST /admin/rebuild",
+                "simulate_order":  "POST /admin/simulate-order",
+            },
+            "ui": {
+                "dashboard":       "GET  /dashboard",
             },
         },
     )
