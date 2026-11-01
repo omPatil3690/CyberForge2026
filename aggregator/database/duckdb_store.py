@@ -223,6 +223,20 @@ def get_tenant_duckdb(tenant_id: int) -> duckdb.DuckDBPyConnection:
         return conn
 
 
+def open_tenant_duckdb_read_only(tenant_id: int) -> duckdb.DuckDBPyConnection:
+    """Open an independent read-only connection for external verification.
+
+    The application uses ``get_tenant_duckdb`` for its writable singleton
+    connection.  Verification and diagnostic processes must use a separate
+    read-only connection so they can inspect a live replica without competing
+    with the application's file lock.
+    """
+    db_path = TENANTS_DIR / f"tenant_{tenant_id}.duckdb"
+    if not db_path.exists():
+        raise FileNotFoundError(f"Tenant DuckDB replica does not exist: {db_path}")
+    return duckdb.connect(database=str(db_path), read_only=True)
+
+
 def _initialize_schema(conn: duckdb.DuckDBPyConnection) -> None:
     """Create the complete tenant replica schema on an open connection."""
     conn.execute(_DDL_ORDERS)
