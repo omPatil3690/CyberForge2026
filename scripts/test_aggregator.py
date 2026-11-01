@@ -25,7 +25,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from fastapi.testclient import TestClient
 import httpx
 
@@ -339,7 +339,21 @@ def run_tests(network_url: str | None = None, live: bool = False, live2: bool = 
         # 10. FR-6 & B-1 Live Freshness Benchmark
         # -------------------------------------------------------------
         print("\n10. Testing FR-6 & B-1: End-to-End Freshness Latency Benchmark...")
-        before_orders = client.get("/companies/1/metrics/summary").json()["order_count"]
+        freshness_from = "2020-01-01T00:00:00+00:00"
+        freshness_to = "2100-01-01T00:00:00+00:00"
+        freshness_path = "/companies/1/metrics/summary"
+        freshness_params = {
+            "from_date": freshness_from,
+            "to_date": freshness_to,
+        }
+        before_response = client.get(freshness_path, params=freshness_params)
+        assert before_response.status_code == 200, (
+            f"FR-6 baseline summary got HTTP {before_response.status_code}: "
+            f"{before_response.text}"
+        )
+        before_summary = before_response.json()
+        before_orders = before_summary["order_count"]
+        before_revenue = before_summary["total_revenue"]
         now_utc = datetime.now(timezone.utc)
         test_order_id = 99999999
 
@@ -348,6 +362,13 @@ def run_tests(network_url: str | None = None, live: bool = False, live2: bool = 
 
         with get_tenant_pg_connection(1) as t1_conn:
             t1_conn.execute("DELETE FROM orders WHERE id = %s", [test_order_id])
+            source_max_updated_at = t1_conn.execute(
+                "SELECT COALESCE(MAX(updated_at), %s) FROM orders",
+                [now_utc],
+            ).fetchone()[0]
+            if source_max_updated_at.tzinfo is None:
+                source_max_updated_at = source_max_updated_at.replace(tzinfo=timezone.utc)
+            now_utc = max(now_utc, source_max_updated_at) + timedelta(microseconds=1)
             t1_conn.execute(
                 """
                 INSERT INTO orders (id, tenant_id, customer_id, status, total_amount, created_at, updated_at)
@@ -360,8 +381,23 @@ def run_tests(network_url: str | None = None, live: bool = False, live2: bool = 
         observed_lag = None
         for _ in range(120):  # Poll every 5s for up to 10 minutes
             time.sleep(5)
-            curr = client.get("/companies/1/metrics/summary").json()["order_count"]
-            if curr > before_orders:
+            current_response = client.get(freshness_path, params=freshness_params)
+            assert current_response.status_code == 200, (
+                f"FR-6 polling summary got HTTP {current_response.status_code}: "
+                f"{current_response.text}"
+            )
+            current_summary = current_response.json()
+            curr = current_summary["order_count"]
+            revenue_delta = current_summary["total_revenue"] - before_revenue
+            presence = client.get(
+                f"/tenants/1/metrics/order-presence/{test_order_id}"
+            )
+            if (
+                curr > before_orders
+                and revenue_delta >= 8888.87
+                and presence.status_code == 200
+                and presence.json()["present"]
+            ):
                 observed_lag = time.time() - t_inject_start
                 break
 

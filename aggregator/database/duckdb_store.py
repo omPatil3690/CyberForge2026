@@ -113,7 +113,8 @@ CREATE TABLE IF NOT EXISTS products (
 _DDL_SYNC_STATE = """
 CREATE TABLE IF NOT EXISTS sync_state (
     table_name     VARCHAR(100) NOT NULL PRIMARY KEY,
-    last_synced_at TIMESTAMPTZ
+    last_synced_at TIMESTAMPTZ,
+    last_synced_id BIGINT NOT NULL DEFAULT 0
 );
 """
 
@@ -239,6 +240,11 @@ def open_tenant_duckdb_read_only(tenant_id: int) -> duckdb.DuckDBPyConnection:
 
 def _initialize_schema(conn: duckdb.DuckDBPyConnection) -> None:
     """Create the complete tenant replica schema on an open connection."""
+    conn.execute(_DDL_SYNC_STATE)
+    try:
+        conn.execute("ALTER TABLE sync_state ADD COLUMN last_synced_id BIGINT DEFAULT 0")
+    except duckdb.CatalogException:
+        pass
     conn.execute(_DDL_ORDERS)
     conn.execute(_DDL_ORDER_ITEMS)
     conn.execute(_DDL_PRODUCTS)
@@ -344,6 +350,26 @@ def get_last_sync_time(
     return ts
 
 
+def get_last_sync_position(
+    conn: duckdb.DuckDBPyConnection,
+    table_name: str,
+    lock: threading.Lock | None = None,
+) -> tuple[datetime, int] | None:
+    """Return the composite timestamp/id watermark for a synced table."""
+    acquired = lock if lock is not None else DUCKDB_WRITE_LOCK
+    with acquired:
+        row = conn.execute(
+            "SELECT last_synced_at, last_synced_id FROM sync_state WHERE table_name = ?",
+            [table_name],
+        ).fetchone()
+    if row is None or row[0] is None:
+        return None
+    ts = row[0]
+    if isinstance(ts, datetime) and ts.tzinfo is None:
+        ts = ts.replace(tzinfo=timezone.utc)
+    return ts, int(row[1] or 0)
+
+
 def set_last_sync_time(
     conn: duckdb.DuckDBPyConnection,
     table_name: str,
@@ -367,10 +393,29 @@ def set_last_sync_time(
     with acquired:
         conn.execute(
             """
-            INSERT OR REPLACE INTO sync_state (table_name, last_synced_at)
-            VALUES (?, ?)
+            INSERT OR REPLACE INTO sync_state (table_name, last_synced_at, last_synced_id)
+            VALUES (?, ?, COALESCE((SELECT last_synced_id FROM sync_state WHERE table_name = ?), 0))
             """,
-            [table_name, ts],
+            [table_name, ts, table_name],
+        )
+
+
+def set_last_sync_position(
+    conn: duckdb.DuckDBPyConnection,
+    table_name: str,
+    ts: datetime,
+    row_id: int,
+    lock: threading.Lock | None = None,
+) -> None:
+    """Persist a composite timestamp/id watermark."""
+    acquired = lock if lock is not None else DUCKDB_WRITE_LOCK
+    with acquired:
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO sync_state (table_name, last_synced_at, last_synced_id)
+            VALUES (?, ?, ?)
+            """,
+            [table_name, ts, row_id],
         )
 
 
@@ -626,6 +671,54 @@ def recompute_hourly_metrics(conn: duckdb.DuckDBPyConnection, lock: threading.Lo
             conn.execute("ROLLBACK")
             raise
     logger.debug("Recomputed hourly_tenant_metrics summary.")
+
+
+def refresh_hourly_metrics_for_periods(
+    conn: duckdb.DuckDBPyConnection,
+    periods: Sequence[datetime],
+    lock: threading.Lock | None = None,
+) -> None:
+    """Refresh only the hourly buckets affected by changed orders."""
+    unique_periods = list(dict.fromkeys(periods))
+    if not unique_periods:
+        return
+    acquired = lock if lock is not None else DUCKDB_WRITE_LOCK
+    with acquired:
+        conn.execute("BEGIN")
+        try:
+            placeholders = ",".join("?" for _ in unique_periods)
+            conn.execute(
+                f"DELETE FROM hourly_tenant_metrics WHERE period IN ({placeholders})",
+                unique_periods,
+            )
+            conn.execute(
+                f"""
+                INSERT INTO hourly_tenant_metrics (
+                    tenant_id, period, order_count, total_revenue, avg_order_value,
+                    delivered_count, delivered_revenue, shipped_count, shipped_revenue,
+                    placed_count, placed_revenue, cancelled_count, cancelled_revenue
+                )
+                SELECT tenant_id, DATE_TRUNC('hour', created_at), COUNT(*),
+                       COALESCE(SUM(total_amount), 0.0),
+                       COALESCE(AVG(total_amount), 0.0),
+                       COUNT(*) FILTER (WHERE status = 'delivered'),
+                       COALESCE(SUM(total_amount) FILTER (WHERE status = 'delivered'), 0.0),
+                       COUNT(*) FILTER (WHERE status = 'shipped'),
+                       COALESCE(SUM(total_amount) FILTER (WHERE status = 'shipped'), 0.0),
+                       COUNT(*) FILTER (WHERE status = 'placed'),
+                       COALESCE(SUM(total_amount) FILTER (WHERE status = 'placed'), 0.0),
+                       COUNT(*) FILTER (WHERE status = 'cancelled'),
+                       COALESCE(SUM(total_amount) FILTER (WHERE status = 'cancelled'), 0.0)
+                FROM orders
+                WHERE DATE_TRUNC('hour', created_at) IN ({placeholders})
+                GROUP BY tenant_id, DATE_TRUNC('hour', created_at)
+                """,
+                unique_periods,
+            )
+            conn.execute("COMMIT")
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
 
 
 def truncate_all(conn: duckdb.DuckDBPyConnection, lock: threading.Lock | None = None) -> None:

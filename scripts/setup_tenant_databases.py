@@ -67,6 +67,7 @@ CREATE TABLE orders (
 );
 CREATE INDEX idx_orders_tenant_created ON orders(tenant_id, created_at);
 CREATE INDEX idx_orders_tenant_status ON orders(tenant_id, status);
+CREATE INDEX idx_orders_updated_id ON orders(updated_at, id);
 
 CREATE TABLE order_items (
     id BIGINT PRIMARY KEY,

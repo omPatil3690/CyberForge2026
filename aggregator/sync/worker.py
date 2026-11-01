@@ -51,6 +51,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from typing import Any
 
@@ -129,6 +130,7 @@ class SyncWorker:
 
         # Discovered/configured tenant IDs — set on first run
         self._tenant_ids: list[int] = []
+        self._max_parallel_tenants = 4
 
     # ------------------------------------------------------------------
     # Public API
@@ -398,7 +400,7 @@ class SyncWorker:
         )
         last_id = 0
         total = 0
-        max_updated_at: datetime | None = None
+        max_position: tuple[datetime, int] | None = None
 
         while True:
             with get_tenant_pg_connection(tenant_id) as conn:
@@ -426,8 +428,9 @@ class SyncWorker:
                 if isinstance(row_updated_at, datetime):
                     if row_updated_at.tzinfo is None:
                         row_updated_at = row_updated_at.replace(tzinfo=timezone.utc)
-                    if max_updated_at is None or row_updated_at > max_updated_at:
-                        max_updated_at = row_updated_at
+                    candidate = (row_updated_at, int(row[0]))
+                    if max_position is None or candidate > max_position:
+                        max_position = candidate
 
             logger.info(
                 "Tenant #%d: Orders synced so far: %d (last_id=%d)",
@@ -437,8 +440,14 @@ class SyncWorker:
             if len(rows) < _INITIAL_SYNC_BATCH:
                 break
 
-        if max_updated_at is not None:
-            store.set_last_sync_time(t_conn, "orders", max_updated_at, t_lock)
+        if max_position is not None:
+            store.set_last_sync_position(
+                t_conn,
+                "orders",
+                max_position[0],
+                max_position[1],
+                t_lock,
+            )
 
         logger.info("Tenant #%d: Full orders sync complete: %d rows.", tenant_id, total)
         return total
@@ -509,14 +518,23 @@ class SyncWorker:
         """
         total = 0
         all_succeeded = True
-        for t_id in self._tenant_ids:
+
+        def sync_one(t_id: int) -> tuple[int, bool]:
             try:
-                total += self._incremental_sync_tenant(t_id)
+                return self._incremental_sync_tenant(t_id), True
             except Exception as exc:
-                all_succeeded = False
                 logger.warning(
                     "Incremental sync failed for tenant #%d: %s — will retry.", t_id, exc
                 )
+                return 0, False
+
+        with ThreadPoolExecutor(
+            max_workers=min(self._max_parallel_tenants, max(1, len(self._tenant_ids))),
+            thread_name_prefix="TenantSync",
+        ) as executor:
+            for rows_synced, succeeded in executor.map(sync_one, self._tenant_ids):
+                total += rows_synced
+                all_succeeded = all_succeeded and succeeded
 
         self.last_sync_time = datetime.now(tz=timezone.utc)
         self.last_sync_row_count = total
@@ -546,8 +564,8 @@ class SyncWorker:
         t_conn = store.get_tenant_duckdb(tenant_id)
         t_lock = store.get_tenant_write_lock(tenant_id)
 
-        watermark = store.get_last_sync_time(t_conn, "orders", t_lock)
-        if watermark is None:
+        position = store.get_last_sync_position(t_conn, "orders", t_lock)
+        if position is None:
             # Watermark missing — fall back to full sync for this tenant
             logger.warning(
                 "Tenant #%d: watermark missing in incremental sync; re-running full sync.",
@@ -555,17 +573,21 @@ class SyncWorker:
             )
             return self._initial_full_sync_tenant(tenant_id)
 
+        watermark, watermark_id = position
         with get_tenant_pg_connection(tenant_id) as conn:
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_orders_updated_id ON orders (updated_at, id)"
+            )
             rows = conn.execute(
                 """
                 SELECT id, tenant_id, customer_id, status,
                        total_amount, created_at, updated_at
                 FROM orders
-                WHERE updated_at > %s
-                ORDER BY updated_at ASC
+                WHERE (updated_at, id) > (%s, %s)
+                ORDER BY updated_at ASC, id ASC
                 LIMIT %s
                 """,
-                [watermark, _INCREMENTAL_LIMIT],
+                [watermark, watermark_id, _INCREMENTAL_LIMIT],
             ).fetchall()
 
         if not rows:
@@ -582,21 +604,26 @@ class SyncWorker:
         changed_ids = [row[0] for row in rows]
         total += self._sync_items_for_orders_tenant(tenant_id, t_conn, t_lock, changed_ids)
 
-        # Recompute privacy-safe hourly rollup in this tenant's DuckDB
-        store.recompute_hourly_metrics(t_conn, t_lock)
+        affected_periods = [
+            row[5].replace(minute=0, second=0, microsecond=0)
+            for row in rows
+            if isinstance(row[5], datetime)
+        ]
+        store.refresh_hourly_metrics_for_periods(t_conn, affected_periods, t_lock)
 
         # Advance watermark
-        max_updated_at: datetime | None = None
-        for row in rows:
-            row_updated_at = row[6]
-            if isinstance(row_updated_at, datetime):
-                if row_updated_at.tzinfo is None:
-                    row_updated_at = row_updated_at.replace(tzinfo=timezone.utc)
-                if max_updated_at is None or row_updated_at > max_updated_at:
-                    max_updated_at = row_updated_at
-
-        if max_updated_at is not None:
-            store.set_last_sync_time(t_conn, "orders", max_updated_at, t_lock)
+        max_row = rows[-1]
+        max_updated_at = max_row[6]
+        if isinstance(max_updated_at, datetime):
+            if max_updated_at.tzinfo is None:
+                max_updated_at = max_updated_at.replace(tzinfo=timezone.utc)
+            store.set_last_sync_position(
+                t_conn,
+                "orders",
+                max_updated_at,
+                int(max_row[0]),
+                t_lock,
+            )
 
         logger.info(
             "Tenant #%d: Incremental sync — %d orders, watermark → %s.",

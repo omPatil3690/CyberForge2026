@@ -434,6 +434,26 @@ def get_status_breakdown(
 # Bonus B-4 — Config-Driven Metrics Engine
 # ---------------------------------------------------------------------------
 
+@router.get(
+    "/tenants/{tenant_id}/metrics/order-presence/{order_id}",
+    summary="Check whether a specific order is present in the tenant replica",
+)
+def get_order_presence(
+    tenant_id: int,
+    order_id: int,
+    conn: duckdb.DuckDBPyConnection = Depends(get_tenant_db),
+    _ready: None = Depends(require_ready),
+    _rate: None = Depends(check_rate_limit),
+) -> dict[str, int | bool]:
+    """Provide an exact replica-presence check for synchronization diagnostics."""
+    with get_tenant_write_lock(tenant_id):
+        row = conn.execute(
+            "SELECT 1 FROM orders WHERE id = ? AND tenant_id = ? LIMIT 1",
+            [order_id, tenant_id],
+        ).fetchone()
+    return {"tenant_id": tenant_id, "order_id": order_id, "present": row is not None}
+
+
 def _load_metric_configs() -> dict[str, dict]:
     cfg_file = Path("config/metrics.yaml")
     if not cfg_file.exists():
