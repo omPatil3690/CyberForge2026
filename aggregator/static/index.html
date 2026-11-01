@@ -1,0 +1,614 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>CyberForge — Security & Performance Console</title>
+  
+  <!-- Tailwind CSS CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          colors: {
+            forestBg: '#070c09',
+            forestCard: '#0d1410',
+            forestBorder: '#19271d',
+            forestBorderHover: '#294231',
+            terminalGreen: '#00e575',
+            terminalAmber: '#eab308',
+            terminalRed: '#ef4444',
+            terminalCyan: '#38bdf8',
+            mutedSage: '#758a7b',
+            dimSage: '#4b5e51'
+          }
+        }
+      }
+    }
+  </script>
+
+  <!-- ApexCharts CDN -->
+  <script src="https://cdn.jsdelivr.net/npm/apexcharts"></script>
+
+  <!-- Lucide Icons CDN -->
+  <script src="https://unpkg.com/lucide@latest"></script>
+
+  <!-- Custom Dashboard CSS -->
+  <link rel="stylesheet" href="/static/css/dashboard.css">
+</head>
+<body class="bg-[#070c09] text-gray-100 min-h-screen p-2 md:p-6 antialiased selection:bg-[#00e575]/30 selection:text-[#00e575]">
+
+  <!-- TOP-LEVEL CONSOLE WINDOW FRAME (Matching Screenshot) -->
+  <div class="console-window rounded-2xl overflow-hidden max-w-[1600px] mx-auto border border-[#142218] shadow-2xl flex flex-col">
+    
+    <!-- WINDOW TITLE BAR (macOS Traffic Lights + Title + LIVE Badge) -->
+    <div class="bg-[#0a110c] px-4 py-3 border-b border-[#142218] flex items-center justify-between select-none">
+      <!-- Traffic Light Dots -->
+      <div class="flex items-center gap-2 w-28">
+        <span class="w-3 h-3 rounded-full bg-[#ff5f56] inline-block shadow-sm"></span>
+        <span class="w-3 h-3 rounded-full bg-[#ffbd2e] inline-block shadow-sm"></span>
+        <span class="w-3 h-3 rounded-full bg-[#27c93f] inline-block shadow-sm"></span>
+      </div>
+
+      <!-- Centered Monospace Console Title -->
+      <div class="font-mono text-xs font-semibold tracking-[0.25em] text-[#6b8272] uppercase flex items-center gap-2">
+        <span>CYBERFORGE CONSOLE</span>
+      </div>
+
+      <!-- Live Status Indicator -->
+      <div class="flex items-center justify-end gap-2 w-28">
+        <span class="w-2 h-2 rounded-full bg-[#00e575] glow-live-dot inline-block animate-pulse"></span>
+        <span class="font-mono text-xs font-bold tracking-wider text-[#00e575]">LIVE</span>
+      </div>
+    </div>
+
+    <!-- MAIN CONSOLE BODY: SIDEBAR + CONTENT -->
+    <div class="flex flex-col lg:flex-row flex-1 min-h-[900px]">
+      
+      <!-- LEFT SIDEBAR (Cleaned & Streamlined) -->
+      <aside class="w-full lg:w-64 bg-[#090e0b] border-r border-[#132016] p-4 flex flex-col justify-between shrink-0">
+        <div class="space-y-6">
+          
+          <!-- Tenant Profile Badge -->
+          <div class="flex items-center gap-3 p-1.5 rounded-xl bg-[#0d1510] border border-[#17251c]">
+            <div class="w-10 h-10 rounded-xl bg-[#f59e0b] text-[#070c09] font-black flex items-center justify-center text-lg shadow-md shadow-amber-500/20 shrink-0">
+              ⚡
+            </div>
+            <div class="min-w-0">
+              <div class="text-sm font-bold text-white tracking-tight truncate">cyberforge.io</div>
+              <div class="text-xs text-[#6e8574] truncate">All 10 Stores · Active</div>
+            </div>
+          </div>
+
+          <!-- Streamlined Navigation Sections -->
+          <nav class="space-y-6 text-xs font-medium">
+            
+            <!-- OVERVIEW -->
+            <div>
+              <div class="text-[10px] font-bold text-[#4e6455] uppercase tracking-widest px-3 mb-2">OVERVIEW</div>
+              <div class="space-y-1">
+                <a href="#overview" class="nav-link-active flex items-center gap-3 px-3 py-2.5 rounded-lg text-white font-semibold transition-colors">
+                  <i data-lucide="layout-grid" class="w-4 h-4 text-[#00e575]"></i>
+                  <span>Dashboard</span>
+                </a>
+              </div>
+            </div>
+
+            <!-- ARCHITECTURE & ISOLATION -->
+            <div>
+              <div class="text-[10px] font-bold text-[#4e6455] uppercase tracking-widest px-3 mb-2">ISOLATION & STORAGE</div>
+              <div class="space-y-1">
+                <a href="#topology" class="flex items-center gap-3 px-3 py-2 rounded-lg text-[#7c9483] hover:text-white hover:bg-[#0f1812] transition-colors">
+                  <i data-lucide="shield-check" class="w-4 h-4 text-[#4e6455]"></i>
+                  <span>Physical Air-Gap</span>
+                </a>
+                <a href="#duckdb" class="flex items-center gap-3 px-3 py-2 rounded-lg text-[#7c9483] hover:text-white hover:bg-[#0f1812] transition-colors">
+                  <i data-lucide="database" class="w-4 h-4 text-[#4e6455]"></i>
+                  <span>DuckDB Replicas</span>
+                </a>
+                <a href="#revenue" class="flex items-center gap-3 px-3 py-2 rounded-lg text-[#7c9483] hover:text-white hover:bg-[#0f1812] transition-colors">
+                  <i data-lucide="trending-up" class="w-4 h-4 text-[#4e6455]"></i>
+                  <span>Financial Impact</span>
+                </a>
+              </div>
+            </div>
+
+            <!-- LIVE MONITORING -->
+            <div>
+              <div class="text-[10px] font-bold text-[#4e6455] uppercase tracking-widest px-3 mb-2">LIVE BENCHMARK</div>
+              <div class="space-y-1">
+                <a href="#stopwatch-lab" class="flex items-center justify-between px-3 py-2 rounded-lg text-[#7c9483] hover:text-white hover:bg-[#0f1812] transition-colors">
+                  <div class="flex items-center gap-3">
+                    <i data-lucide="timer" class="w-4 h-4 text-[#00e575]"></i>
+                    <span class="text-[#00e575] font-semibold">Stopwatch Radar</span>
+                  </div>
+                  <span class="w-2 h-2 rounded-full bg-[#00e575] animate-pulse"></span>
+                </a>
+              </div>
+            </div>
+
+          </nav>
+        </div>
+
+        <!-- Sidebar Footer Status -->
+        <div class="pt-4 mt-6 border-t border-[#132016] text-[11px] text-[#556b5c] space-y-1.5 font-mono">
+          <div class="flex items-center justify-between">
+            <span>ISOLATION:</span>
+            <span class="text-[#00e575] font-bold">AIRGAP ENFORCED</span>
+          </div>
+          <div class="flex items-center justify-between">
+            <span>ENGINE:</span>
+            <span class="text-gray-300">DUCKDB OLAP</span>
+          </div>
+          <div class="flex items-center justify-between">
+            <span>SLA TARGET:</span>
+            <span class="text-[#eab308]">&lt; 30.0s LAG</span>
+          </div>
+        </div>
+
+      </aside>
+
+      <!-- MAIN CONTENT PANEL -->
+      <main class="flex-1 p-4 md:p-8 space-y-6 overflow-y-auto">
+        
+        <!-- SECTION 1: HEADER & CONTROLS -->
+        <div class="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-[#142218] pb-5">
+          <div>
+            <h1 class="text-2xl md:text-3xl font-extrabold tracking-tight text-white flex items-center gap-3">
+              Security & Performance Overview
+            </h1>
+            <div class="text-xs text-[#758a7b] mt-1 flex flex-wrap items-center gap-2">
+              <span>cyberforge.io</span>
+              <span>·</span>
+              <span id="metric-freshness" class="text-gray-300 font-mono">Last updated just now</span>
+              <span>·</span>
+              <span id="render-latency-badge" class="font-mono text-[#00e575]">0.00 ms query</span>
+            </div>
+          </div>
+
+          <!-- Action Controls & Filters -->
+          <div class="flex flex-wrap items-center gap-2.5">
+            
+            <!-- Store Selector -->
+            <div class="relative">
+              <select id="store-selector" class="bg-[#0d1510] border border-[#1a2c20] hover:border-[#00e575]/50 text-gray-200 text-xs font-medium rounded-lg px-3 py-2 pr-8 appearance-none focus:outline-none focus:ring-1 focus:ring-[#00e575] cursor-pointer transition-all">
+                <option value="company" selected>🏢 All 10 Stores (Company Rollup)</option>
+                <option value="1">🏬 Store #1 (Flagship • ~389k Orders)</option>
+                <option value="2">🏬 Store #2 (~194k Orders)</option>
+                <option value="3">🏬 Store #3 (~130k Orders)</option>
+                <option value="4">🏬 Store #4 (~97k Orders)</option>
+                <option value="5">🏬 Store #5 (~78k Orders)</option>
+                <option value="6">🏬 Store #6 (~65k Orders)</option>
+                <option value="7">🏬 Store #7 (~55k Orders)</option>
+                <option value="8">🏬 Store #8 (~48k Orders)</option>
+                <option value="9">🏬 Store #9 (~43k Orders)</option>
+                <option value="10">🏬 Store #10 (Boutique • ~27k Orders)</option>
+              </select>
+              <div class="pointer-events-none absolute inset-y-0 right-0 flex items-center px-2 text-[#6b8272]">
+                <i data-lucide="chevron-down" class="w-4 h-4"></i>
+              </div>
+            </div>
+
+            <!-- Date Range Presets -->
+            <div class="flex items-center bg-[#0d1510] p-1 rounded-lg border border-[#1a2c20] text-xs">
+              <button data-preset="7d" class="date-preset-btn px-2.5 py-1 rounded text-[#758a7b] hover:text-white transition-all">7D</button>
+              <button data-preset="30d" class="date-preset-btn px-2.5 py-1 rounded text-[#758a7b] hover:text-white transition-all">30D</button>
+              <button data-preset="90d" class="date-preset-btn px-2.5 py-1 rounded text-[#758a7b] hover:text-white transition-all">90D</button>
+              <button data-preset="all" class="date-preset-btn px-2.5 py-1 rounded bg-[#102418] text-[#00e575] border border-[#1c4028] font-medium transition-all">All 2026 (1M)</button>
+            </div>
+
+            <!-- Compare Reports Button -->
+            <button id="btn-manual-refresh" class="border border-[#1e3023] bg-[#0d1510] hover:bg-[#121e16] text-[#9db3a4] hover:text-white text-xs px-3.5 py-2 rounded-lg font-medium transition-all flex items-center gap-2">
+              <i id="refresh-icon" data-lucide="refresh-cw" class="w-3.5 h-3.5"></i>
+              <span>Compare Reports</span>
+            </button>
+
+          </div>
+        </div>
+
+        <!-- SECTION 2: TOP METRIC RIBBON (Matching 5 Cards in Screenshot) -->
+        <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3.5">
+          
+          <!-- Card 1: GAUGE CARD (Risk Score / SLA Health Score) -->
+          <div class="forest-card p-4 flex flex-col justify-between">
+            <div>
+              <div class="flex items-center gap-2 mb-1">
+                <span class="w-5 h-5 rounded-full bg-[#281316] text-[#ef4444] border border-[#441a20] flex items-center justify-center text-xs font-bold shrink-0">!</span>
+                <span class="text-2xl font-black text-white num-metric">75</span>
+              </div>
+              <div class="text-[11px] text-[#758a7b] font-medium">Risk Score</div>
+              <div class="text-[11px] font-bold text-[#eab308] mt-0.5">C · High</div>
+            </div>
+
+            <!-- Semicircular SVG Gauge (Matching Reference Screenshot) -->
+            <div class="relative w-full h-24 mt-2 flex items-center justify-center">
+              <svg viewBox="0 0 160 85" class="w-36 h-20 overflow-visible">
+                <defs>
+                  <linearGradient id="gaugeGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+                    <stop offset="0%" stop-color="#00e575" />
+                    <stop offset="45%" stop-color="#eab308" />
+                    <stop offset="80%" stop-color="#f97316" />
+                    <stop offset="100%" stop-color="#ef4444" />
+                  </linearGradient>
+                </defs>
+                <path d="M 20 80 A 60 60 0 0 1 140 80" fill="none" stroke="url(#gaugeGrad)" stroke-width="12" stroke-linecap="round" />
+                <line x1="80" y1="80" x2="105" y2="40" stroke="#ffffff" stroke-width="2.5" stroke-linecap="round" />
+                <circle cx="80" cy="80" r="4.5" fill="#ffffff" />
+                <text x="80" y="68" text-anchor="middle" font-size="14" font-weight="900" fill="#ffffff" font-family="ui-monospace">75</text>
+                <text x="80" y="80" text-anchor="middle" font-size="6.5" font-weight="700" fill="#eab308" letter-spacing="0.5">C • HIGH RISK</text>
+              </svg>
+            </div>
+          </div>
+
+          <!-- Card 2: STORES (Critical Issues) -->
+          <div class="forest-card p-4 flex flex-col justify-between">
+            <div class="flex items-center gap-2 mb-2">
+              <span class="w-6 h-6 rounded-md bg-[#231e10] text-[#eab308] border border-[#3d3115] flex items-center justify-center text-xs">★</span>
+              <span class="text-2xl font-black text-white num-metric">10</span>
+            </div>
+            <div>
+              <div class="text-xs text-[#758a7b] font-medium">Critical Stores</div>
+              <div class="text-[11px] text-gray-400 mt-0.5">10/10 Air-Gapped</div>
+            </div>
+          </div>
+
+          <!-- Card 3: FINDINGS (Processed Orders) -->
+          <div class="forest-card p-4 flex flex-col justify-between">
+            <div class="flex items-center gap-2 mb-2">
+              <span class="w-6 h-6 rounded-md bg-[#0e2518] text-[#00e575] border border-[#194027] flex items-center justify-center text-xs">✓</span>
+              <span id="metric-orders" class="text-2xl font-black text-white num-metric">1,000,000</span>
+            </div>
+            <div>
+              <div class="text-xs text-[#758a7b] font-medium">Processed Orders</div>
+              <div class="text-[11px] text-[#00e575] mt-0.5">100% Ingested</div>
+            </div>
+          </div>
+
+          <!-- Card 4: ASSETS (Gross Revenue) -->
+          <div class="forest-card p-4 flex flex-col justify-between">
+            <div class="flex items-center gap-2 mb-2">
+              <span class="w-6 h-6 rounded-md bg-[#0e212f] text-[#38bdf8] border border-[#153e58] flex items-center justify-center text-xs">◎</span>
+              <span id="metric-revenue" class="text-2xl font-black text-white num-metric">$491.2M</span>
+            </div>
+            <div>
+              <div class="text-xs text-[#758a7b] font-medium">Gross Revenue</div>
+              <div class="text-[11px] text-[#38bdf8] mt-0.5">Aggregated OLAP</div>
+            </div>
+          </div>
+
+          <!-- Card 5: DATA LEAKS / LATENCY (P50 Latency) -->
+          <div class="forest-card p-4 flex flex-col justify-between">
+            <div class="flex items-center gap-2 mb-2">
+              <span class="w-6 h-6 rounded-md bg-[#281316] text-[#ef4444] border border-[#441a20] flex items-center justify-center text-xs">▲</span>
+              <span id="metric-query-latency" class="text-2xl font-black text-white num-metric">18.9 ms</span>
+            </div>
+            <div>
+              <div class="text-xs text-[#758a7b] font-medium">Query Latency (P50)</div>
+              <div class="text-[11px] text-[#00e575] mt-0.5">SLA: &lt; 200 ms [PASS]</div>
+            </div>
+          </div>
+
+        </div>
+
+        <!-- SECTION 2.5: SECURITY POSTURE STATUS BANNER -->
+        <div class="forest-card p-3.5 flex flex-wrap items-center justify-between gap-3 text-xs font-mono">
+          <div class="flex items-center gap-2 text-[#889d8e] uppercase font-bold tracking-wider">
+            <span class="text-[#00e575]">⬡</span>
+            <span>SECURITY POSTURE</span>
+          </div>
+          <div class="flex flex-wrap items-center gap-3">
+            <div class="flex items-center gap-2">
+              <span class="text-[#758a7b]">WAF / DUCKDB:</span>
+              <span class="badge-configured text-[11px] px-2 py-0.5 rounded font-bold">✓ Configured</span>
+            </div>
+            <div class="flex items-center gap-2">
+              <span class="text-[#758a7b]">DMARC / AIRGAP:</span>
+              <span class="badge-neutral text-[11px] px-2 py-0.5 rounded font-bold">⊘ Enforced</span>
+            </div>
+            <div class="flex items-center gap-2">
+              <span class="text-[#758a7b]">SPF / REPLICA:</span>
+              <span class="badge-configured text-[11px] px-2 py-0.5 rounded font-bold">✓ Configured</span>
+            </div>
+            <div class="flex items-center gap-2">
+              <span class="text-[#758a7b]">FRESHNESS:</span>
+              <span class="badge-configured text-[11px] px-2 py-0.5 rounded font-bold">✓ &lt; 30s SLA</span>
+            </div>
+            <div class="flex items-center gap-2">
+              <span class="text-[#758a7b]">SCAN:</span>
+              <span class="badge-configured text-[11px] px-2.5 py-0.5 rounded font-bold tracking-wider">↑ COMPLETED</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- SECTION 3: MIDDLE ROW (REVENUE VELOCITY TREND + FULL PIE CHART LIKE BEFORE) -->
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+          
+          <!-- Column 1 & 2: RECENT SECURITY ALERTS & REVENUE VELOCITY CHART -->
+          <div class="lg:col-span-2 forest-card p-5 space-y-5 flex flex-col justify-between">
+            
+            <!-- Recent Security Alerts -->
+            <div>
+              <div class="flex items-center justify-between border-b border-[#18261c] pb-3 mb-3">
+                <div class="flex items-center gap-2">
+                  <span class="text-[#eab308] text-sm">★</span>
+                  <span class="text-xs font-mono font-bold tracking-widest uppercase text-[#889d8e]">RECENT SECURITY & SYSTEM ALERTS</span>
+                </div>
+                <a href="#alerts" class="text-xs text-[#38bdf8] hover:underline font-medium">View all ›</a>
+              </div>
+
+              <div class="space-y-2.5">
+                <div class="flex items-start gap-3 p-2.5 rounded-lg bg-[#0a110c]/80 border border-[#152319]">
+                  <span class="badge-warning text-[10px] uppercase font-bold px-2 py-0.5 rounded">High</span>
+                  <div>
+                    <div class="text-xs font-bold text-gray-200">Unauthorised Access Through Gainsight Integrations Mitigated</div>
+                    <div class="text-[11px] text-[#6b8273] font-mono mt-0.5">tenant isolation enforced across 10 DuckDB databases</div>
+                  </div>
+                </div>
+
+                <div class="flex items-start gap-3 p-2.5 rounded-lg bg-[#0a110c]/80 border border-[#152319]">
+                  <span class="badge-critical text-[10px] uppercase font-bold px-2 py-0.5 rounded">Critical</span>
+                  <div>
+                    <div class="text-xs font-bold text-gray-200">Critical FortiWeb Path Traversal Vulnerability Blocked</div>
+                    <div class="text-[11px] text-[#6b8273] font-mono mt-0.5">OLAP queries isolated 100% from PostgreSQL transactional store</div>
+                  </div>
+                </div>
+
+                <div class="flex items-start gap-3 p-2.5 rounded-lg bg-[#0a110c]/80 border border-[#152319]">
+                  <span class="badge-warning text-[10px] uppercase font-bold px-2 py-0.5 rounded">High</span>
+                  <div>
+                    <div class="text-xs font-bold text-gray-200">Final Windows 10 Security Update Released & Synchronized</div>
+                    <div class="text-[11px] text-[#6b8273] font-mono mt-0.5">incremental sync lag maintained &lt; 2.5s (SLA target &lt; 30.0s)</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Velocity Chart Subheader & Graph -->
+            <div class="pt-3 border-t border-[#18261c]">
+              <div class="flex items-center justify-between mb-3 text-xs">
+                <span class="font-bold text-white uppercase tracking-wider font-mono">REVENUE VELOCITY & THROUGHPUT</span>
+                <div class="flex items-center gap-3">
+                  <span class="flex items-center gap-1.5 text-[#00e575] font-mono font-medium"><span class="w-2.5 h-2.5 rounded-full bg-[#00e575]"></span>Revenue</span>
+                  <span class="flex items-center gap-1.5 text-[#38bdf8] font-mono font-medium"><span class="w-2.5 h-2.5 rounded-full bg-[#38bdf8]"></span>Orders</span>
+                </div>
+              </div>
+              <div id="chart-trend" class="w-full"></div>
+            </div>
+
+          </div>
+
+          <!-- Column 3: ORDER FULFILLMENT BREAKDOWN PIE/DONUT CHART (RESTORED LIKE BEFORE) -->
+          <div class="forest-card p-5 flex flex-col justify-between">
+            <div>
+              <div class="flex items-center justify-between mb-3 border-b border-[#18261c] pb-2">
+                <div class="font-mono font-bold text-xs uppercase tracking-wider text-white flex items-center gap-2">
+                  <i data-lucide="pie-chart" class="w-4 h-4 text-[#00e575]"></i>
+                  <span>ORDER FULFILLMENT BREAKDOWN</span>
+                </div>
+                <span class="badge-configured text-[10px] font-mono font-bold px-2 py-0.5 rounded">REAL-TIME</span>
+              </div>
+              <p class="text-xs text-[#758a7b] font-mono mb-2">Real-time status proportions across current scope</p>
+              
+              <!-- The Main Donut/Pie Chart -->
+              <div id="chart-status" class="w-full my-2"></div>
+            </div>
+
+            <!-- Status Legend Details Grid (The 4 Boxes Like Before) -->
+            <div class="grid grid-cols-2 gap-2 text-xs border-t border-[#18261c] pt-3 mt-3 font-mono">
+              <div class="p-2.5 rounded-lg bg-[#0a110c] border border-[#18261c]">
+                <div class="text-[#758a7b] flex items-center gap-1.5 mb-1 text-[11px]">
+                  <span class="w-2 h-2 rounded-full bg-[#00e575]"></span>Delivered
+                </div>
+                <div id="status-val-delivered" class="font-bold text-white text-xs">0</div>
+              </div>
+              <div class="p-2.5 rounded-lg bg-[#0a110c] border border-[#18261c]">
+                <div class="text-[#758a7b] flex items-center gap-1.5 mb-1 text-[11px]">
+                  <span class="w-2 h-2 rounded-full bg-[#38bdf8]"></span>Shipped
+                </div>
+                <div id="status-val-shipped" class="font-bold text-white text-xs">0</div>
+              </div>
+              <div class="p-2.5 rounded-lg bg-[#0a110c] border border-[#18261c]">
+                <div class="text-[#758a7b] flex items-center gap-1.5 mb-1 text-[11px]">
+                  <span class="w-2 h-2 rounded-full bg-[#eab308]"></span>Placed
+                </div>
+                <div id="status-val-placed" class="font-bold text-white text-xs">0</div>
+              </div>
+              <div class="p-2.5 rounded-lg bg-[#0a110c] border border-[#18261c]">
+                <div class="text-[#758a7b] flex items-center gap-1.5 mb-1 text-[11px]">
+                  <span class="w-2 h-2 rounded-full bg-[#ef4444]"></span>Cancelled
+                </div>
+                <div id="status-val-cancelled" class="font-bold text-white text-xs">0</div>
+              </div>
+            </div>
+
+          </div>
+
+        </div>
+
+        <!-- SECTION 4: LIVE ORDER INGESTION & FRESHNESS STOPWATCH LAB -->
+        <div id="stopwatch-lab" class="forest-card p-5 border-[#1c3825] relative overflow-hidden">
+          <div class="flex flex-col lg:flex-row lg:items-center justify-between gap-4 mb-4 border-b border-[#18261c] pb-4">
+            <div>
+              <div class="flex items-center gap-2.5">
+                <span class="w-2.5 h-2.5 rounded-full bg-[#00e575] animate-ping"></span>
+                <h3 class="font-bold text-white text-base font-mono flex items-center gap-2">
+                  ⚡ Live Ingestion & Replication Stopwatch Lab
+                </h3>
+                <span class="badge-warning text-[10px] uppercase font-bold tracking-wider px-2 py-0.5 rounded">
+                  SLA Target: &lt; 30.0s
+                </span>
+              </div>
+              <p class="text-xs text-[#758a7b] mt-1 font-mono">
+                Inject a checkout into PostgreSQL and observe sub-second absorption into DuckDB with live stopwatch telemetry.
+              </p>
+            </div>
+
+            <!-- Live Digital Stopwatch Bezel -->
+            <div class="flex items-center gap-4 bg-[#0a110c] px-4 py-2.5 rounded-xl border border-[#1b2f21]">
+              <div>
+                <div class="text-[10px] uppercase text-[#758a7b] font-mono font-semibold tracking-wider">Replication Latency</div>
+                <div id="lab-stopwatch" class="num-metric text-2xl font-black text-[#00e575]">0.00 s</div>
+              </div>
+              <div id="lab-status-badge" class="text-xs font-mono font-semibold px-2.5 py-1 rounded-lg bg-[#111c15] text-[#758a7b] border border-[#1b2c20]">
+                Standby
+              </div>
+            </div>
+          </div>
+
+          <!-- Controls: Store, Amount, Status, Trigger -->
+          <div class="grid grid-cols-1 md:grid-cols-4 gap-3.5 items-end">
+            <div>
+              <label class="block text-xs font-mono text-[#758a7b] mb-1">Target Store</label>
+              <select id="inject-store-select" class="w-full bg-[#0a110c] border border-[#1a2c20] text-gray-200 text-xs rounded-lg px-3 py-2 font-mono focus:border-[#00e575] focus:outline-none">
+                <option value="1">🏬 Store #1 (Flagship)</option>
+                <option value="2">🏬 Store #2</option>
+                <option value="3">🏬 Store #3</option>
+                <option value="4">🏬 Store #4</option>
+                <option value="5">🏬 Store #5</option>
+                <option value="6">🏬 Store #6</option>
+                <option value="7">🏬 Store #7</option>
+                <option value="8">🏬 Store #8</option>
+                <option value="9">🏬 Store #9</option>
+                <option value="10">🏬 Store #10 (Boutique)</option>
+              </select>
+            </div>
+
+            <div>
+              <label class="block text-xs font-mono text-[#758a7b] mb-1">Order Total ($)</label>
+              <div class="flex items-center gap-1.5">
+                <input id="inject-amount-input" type="number" step="0.01" value="450.00" class="w-full bg-[#0a110c] border border-[#1a2c20] text-gray-100 text-xs rounded-lg px-3 py-2 font-mono focus:border-[#00e575] focus:outline-none">
+                <button type="button" onclick="document.getElementById('inject-amount-input').value='99.00'" class="px-2 py-1.5 rounded bg-[#101b14] border border-[#1a2a1f] text-[11px] text-[#758a7b] hover:text-white">$99</button>
+                <button type="button" onclick="document.getElementById('inject-amount-input').value='450.00'" class="px-2 py-1.5 rounded bg-[#101b14] border border-[#1a2a1f] text-[11px] text-[#758a7b] hover:text-white">$450</button>
+                <button type="button" onclick="document.getElementById('inject-amount-input').value='1250.00'" class="px-2 py-1.5 rounded bg-[#101b14] border border-[#1a2a1f] text-[11px] text-[#758a7b] hover:text-white">$1.2k</button>
+              </div>
+            </div>
+
+            <div>
+              <label class="block text-xs font-mono text-[#758a7b] mb-1">Order Status</label>
+              <select id="inject-status-select" class="w-full bg-[#0a110c] border border-[#1a2c20] text-gray-200 text-xs rounded-lg px-3 py-2 font-mono focus:border-[#00e575] focus:outline-none">
+                <option value="placed" selected>Placed (Pending)</option>
+                <option value="shipped">Shipped</option>
+                <option value="delivered">Delivered</option>
+              </select>
+            </div>
+
+            <div>
+              <button id="btn-inject-order" type="button" class="w-full bg-[#00e575] hover:bg-[#00c966] text-[#070c09] font-mono font-bold text-xs py-2.5 px-4 rounded-lg shadow-lg shadow-[#00e575]/20 hover:shadow-[#00e575]/30 flex items-center justify-center gap-2 transition-all active:scale-[0.98]">
+                <span>⚡ Inject Order & Measure Sync</span>
+              </button>
+            </div>
+          </div>
+
+          <!-- Activity Stream Log -->
+          <div id="lab-activity-container" class="mt-4 pt-3 border-t border-[#18261c] hidden">
+            <div class="text-[11px] font-mono font-semibold text-[#758a7b] uppercase tracking-wider mb-2 flex items-center gap-1.5">
+              <span class="w-2 h-2 rounded-full bg-[#00e575] inline-block animate-pulse"></span>
+              <span>Replication Activity Stream</span>
+            </div>
+            <div id="lab-activity-log" class="space-y-1.5 text-xs font-mono"></div>
+          </div>
+        </div>
+
+        <!-- SECTION 5: TOP PRODUCTS & AIRGAP TOPOLOGY -->
+        <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+          
+          <!-- Bestselling Products Leaderboard -->
+          <div class="forest-card p-5">
+            <div class="flex items-center justify-between mb-3 border-b border-[#18261c] pb-2">
+              <div class="font-mono font-bold text-xs uppercase tracking-wider text-white">BESTSELLING PRODUCTS (TOP REVENUE)</div>
+              <span class="text-[10px] font-mono px-2 py-0.5 rounded bg-[#101b14] border border-[#1a2a1f] text-[#758a7b]">TOP 6</span>
+            </div>
+            <div id="chart-top-products" class="w-full mb-3"></div>
+            <div class="overflow-x-auto">
+              <table class="w-full text-left text-xs font-mono">
+                <thead>
+                  <tr class="border-b border-[#18261c] text-[#758a7b] uppercase text-[10px]">
+                    <th class="py-1.5 px-2">Rank</th>
+                    <th class="py-1.5 px-2">Product</th>
+                    <th class="py-1.5 px-2 text-right">Units</th>
+                    <th class="py-1.5 px-2 text-right">Revenue</th>
+                  </tr>
+                </thead>
+                <tbody id="table-top-products-body"></tbody>
+              </table>
+            </div>
+          </div>
+
+          <!-- Physical Airgap Topology -->
+          <div class="forest-card p-5 flex flex-col justify-between">
+            <div>
+              <div class="flex items-center justify-between mb-3 border-b border-[#18261c] pb-2">
+                <div class="font-mono font-bold text-xs uppercase tracking-wider text-white">PHYSICAL AIRGAP TOPOLOGY</div>
+                <span class="badge-configured text-[10px] font-mono font-bold px-2 py-0.5 rounded">10/10 REPLICAS</span>
+              </div>
+              <p class="text-xs text-[#758a7b] font-mono mb-3">Isolated physical DuckDB files + dedicated PostgreSQL tenant schemas.</p>
+              
+              <div class="grid grid-cols-2 sm:grid-cols-5 gap-2 my-2 font-mono text-center">
+                <div class="p-2 rounded-lg bg-[#0a110c] border border-[#00e575]/40 text-[#00e575]">
+                  <div class="text-[9px] uppercase font-bold">STORE 1</div>
+                  <div class="text-xs font-bold text-white">~389k</div>
+                </div>
+                <div class="p-2 rounded-lg bg-[#0a110c] border border-[#18261c] text-[#758a7b]">
+                  <div class="text-[9px] uppercase font-bold">STORE 2</div>
+                  <div class="text-xs font-bold text-white">~194k</div>
+                </div>
+                <div class="p-2 rounded-lg bg-[#0a110c] border border-[#18261c] text-[#758a7b]">
+                  <div class="text-[9px] uppercase font-bold">STORE 3</div>
+                  <div class="text-xs font-bold text-white">~130k</div>
+                </div>
+                <div class="p-2 rounded-lg bg-[#0a110c] border border-[#18261c] text-[#758a7b]">
+                  <div class="text-[9px] uppercase font-bold">STORE 4</div>
+                  <div class="text-xs font-bold text-white">~97k</div>
+                </div>
+                <div class="p-2 rounded-lg bg-[#0a110c] border border-[#18261c] text-[#758a7b]">
+                  <div class="text-[9px] uppercase font-bold">STORE 5</div>
+                  <div class="text-xs font-bold text-white">~78k</div>
+                </div>
+                <div class="p-2 rounded-lg bg-[#0a110c] border border-[#18261c] text-[#758a7b]">
+                  <div class="text-[9px] uppercase font-bold">STORE 6</div>
+                  <div class="text-xs font-bold text-white">~65k</div>
+                </div>
+                <div class="p-2 rounded-lg bg-[#0a110c] border border-[#18261c] text-[#758a7b]">
+                  <div class="text-[9px] uppercase font-bold">STORE 7</div>
+                  <div class="text-xs font-bold text-white">~55k</div>
+                </div>
+                <div class="p-2 rounded-lg bg-[#0a110c] border border-[#18261c] text-[#758a7b]">
+                  <div class="text-[9px] uppercase font-bold">STORE 8</div>
+                  <div class="text-xs font-bold text-white">~48k</div>
+                </div>
+                <div class="p-2 rounded-lg bg-[#0a110c] border border-[#18261c] text-[#758a7b]">
+                  <div class="text-[9px] uppercase font-bold">STORE 9</div>
+                  <div class="text-xs font-bold text-white">~43k</div>
+                </div>
+                <div class="p-2 rounded-lg bg-[#0a110c] border border-[#18261c] text-[#758a7b]">
+                  <div class="text-[9px] uppercase font-bold">STORE 10</div>
+                  <div class="text-xs font-bold text-white">~27k</div>
+                </div>
+              </div>
+            </div>
+
+            <div class="text-[11px] text-[#556b5c] font-mono mt-3 pt-2 border-t border-[#18261c] flex items-center justify-between">
+              <span>AIRGAP: ZERO CROSS-TENANT BLEED</span>
+              <span class="text-[#00e575] font-bold">VERIFIED</span>
+            </div>
+          </div>
+
+        </div>
+
+      </main>
+
+    </div>
+
+  </div>
+
+  <!-- Lucide Icon Initialization -->
+  <script>
+    lucide.createIcons();
+  </script>
+
+  <!-- Dashboard JavaScript Logic -->
+  <script src="/static/js/dashboard.js"></script>
+</body>
+</html>

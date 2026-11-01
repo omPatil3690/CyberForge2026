@@ -1,0 +1,165 @@
+/* CyberForge Dashboard Styles - Dark Military Forest Terminal Aesthetic */
+
+:root {
+  --bg-primary: #070c09;
+  --bg-secondary: #0a110c;
+  --bg-card: #0d1410;
+  --bg-card-glass: rgba(13, 20, 16, 0.92);
+  --border-card: #19271d;
+  --border-card-hover: #294231;
+  --sidebar-bg: #090e0b;
+  --sidebar-border: #132016;
+  
+  --accent-emerald: #00e575;
+  --accent-emerald-dim: rgba(0, 229, 117, 0.12);
+  --accent-amber: #eab308;
+  --accent-amber-dim: rgba(234, 179, 8, 0.12);
+  --accent-rose: #ef4444;
+  --accent-rose-dim: rgba(239, 68, 68, 0.12);
+  --accent-cyan: #38bdf8;
+  --accent-cyan-dim: rgba(56, 189, 248, 0.12);
+  
+  --text-primary: #f3f4f6;
+  --text-muted: #758a7b;
+  --text-dim: #4b5e51;
+}
+
+body {
+  background-color: var(--bg-primary);
+  color: var(--text-primary);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  overflow-x: hidden;
+}
+
+/* Console window container */
+.console-window {
+  background: var(--bg-primary);
+  border: 1px solid #142218;
+  box-shadow: 0 25px 60px -15px rgba(0, 0, 0, 0.9);
+}
+
+/* Card panel styling matching the reference screenshot */
+.forest-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border-card);
+  border-radius: 14px;
+  box-shadow: 0 8px 20px -4px rgba(0, 0, 0, 0.6);
+  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.forest-card:hover {
+  border-color: var(--border-card-hover);
+  box-shadow: 0 12px 28px -4px rgba(0, 0, 0, 0.8), 0 0 16px -2px rgba(0, 229, 117, 0.08);
+}
+
+/* Tabular figures for numbers */
+.num-metric {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.02em;
+}
+
+/* Glowing live accents */
+.glow-live-dot {
+  box-shadow: 0 0 12px 2px rgba(0, 229, 117, 0.7);
+}
+
+.glow-emerald-card {
+  box-shadow: 0 0 24px -2px rgba(0, 229, 117, 0.25);
+}
+
+/* Status Pill Badges */
+.badge-configured {
+  background: #0e2518;
+  color: #00e575;
+  border: 1px solid #194027;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.badge-warning {
+  background: #241e10;
+  color: #eab308;
+  border: 1px solid #3d3115;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.badge-critical {
+  background: #281316;
+  color: #f87171;
+  border: 1px solid #441a20;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.badge-neutral {
+  background: #121914;
+  color: #718476;
+  border: 1px solid #1c2920;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+/* Sidebar navigation styling */
+.nav-link-active {
+  background-color: #112317;
+  border: 1px solid #1c3d27;
+  color: #ffffff;
+  position: relative;
+}
+
+.nav-link-active::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 15%;
+  height: 70%;
+  width: 4px;
+  background-color: #00e575;
+  border-radius: 0 4px 4px 0;
+  box-shadow: 0 0 10px rgba(0, 229, 117, 0.8);
+}
+
+/* Custom sleek terminal scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: #070c09;
+}
+::-webkit-scrollbar-thumb {
+  background: #18261c;
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #253d2d;
+}
+
+/* Card flash animation on real-time update */
+.animate-update {
+  animation: emerald-flash 0.65s ease-out;
+}
+
+@keyframes emerald-flash {
+  0% {
+    background-color: rgba(0, 229, 117, 0.22);
+    border-color: #00e575;
+  }
+  100% {
+    background-color: var(--bg-card);
+    border-color: var(--border-card);
+  }
+}
+
+/* ApexCharts dark styling adjustments */
+.apexcharts-tooltip.apexcharts-theme-dark {
+  background: #0d1410 !important;
+  border: 1px solid #1d2e22 !important;
+  box-shadow: 0 12px 28px -4px rgba(0, 0, 0, 0.9) !important;
+  border-radius: 10px !important;
+}
+
+.apexcharts-tooltip-title {
+  background: #121c16 !important;
+  border-bottom: 1px solid #1d2e22 !important;
+  color: #e5e7eb !important;
+  font-weight: 600 !important;
+}
