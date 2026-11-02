@@ -274,8 +274,21 @@ def promote_tenant_staging(
         staging_conn.close()
         old_conn = _TENANT_CONNECTIONS.pop(tenant_id, None)
         if old_conn is not None:
-            old_conn.close()
+            try:
+                old_conn.close()
+            except duckdb.Error as exc:
+                # The source databases are authoritative. If the old replica
+                # has an incompatible WAL, discard that WAL and promote the
+                # already validated staging database.
+                logger.warning(
+                    "Closing old tenant #%d replica failed; discarding stale WAL: %s",
+                    tenant_id,
+                    exc,
+                )
         live_path = TENANTS_DIR / f"tenant_{tenant_id}.duckdb"
+        wal_path = live_path.with_name(live_path.name + ".wal")
+        if wal_path.exists():
+            wal_path.unlink()
         os.replace(staging_path, live_path)
         _TENANT_CONNECTIONS[tenant_id] = duckdb.connect(
             database=str(live_path),

@@ -26,7 +26,6 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from datetime import datetime, timedelta, timezone
-from fastapi.testclient import TestClient
 import httpx
 
 from aggregator.api.main import app
@@ -42,7 +41,7 @@ def run_tests(network_url: str | None = None, live: bool = False, live2: bool = 
     client_context = (
         httpx.Client(base_url=network_url, timeout=30.0)
         if network_url
-        else TestClient(app)
+        else _create_test_client()
     )
     with client_context as client:
         # -------------------------------------------------------------
@@ -58,11 +57,15 @@ def run_tests(network_url: str | None = None, live: bool = False, live2: bool = 
         health = r_health.json()
         expected_orders = health["pg_order_count_estimate"]
         print(f"   -> DuckDB Synced  : {health['duckdb_order_count']:,} orders across all store replicas")
-        print(f"   -> PostgreSQL Est.: {health['pg_order_count_estimate']:,} orders across 10 tenant databases")
-        assert health["duckdb_order_count"] == expected_orders, (
-            f"DuckDB/PostgreSQL order count mismatch: "
-            f"DuckDB={health['duckdb_order_count']}, PostgreSQL={expected_orders}"
+        print(
+            f"   -> PostgreSQL Est.: {expected_orders:,} orders across 10 tenant databases "
+            "(approximate)"
         )
+        if health["duckdb_order_count"] != expected_orders:
+            print(
+                "   -> Count note      : PostgreSQL reltuples is an approximate, "
+                "possibly stale estimate; exact source comparisons run below."
+            )
 
         # -------------------------------------------------------------
         # 2. FR-1 Company Owner Summary (All 10 Stores / source-count validated)
@@ -354,21 +357,19 @@ def run_tests(network_url: str | None = None, live: bool = False, live2: bool = 
         before_summary = before_response.json()
         before_orders = before_summary["order_count"]
         before_revenue = before_summary["total_revenue"]
-        now_utc = datetime.now(timezone.utc)
-        test_order_id = 99999999
-
         print("   -> Injecting new live order into Store #1 in PostgreSQL (central & tenant DBs)...")
         t_inject_start = time.time()
 
         with get_tenant_pg_connection(1) as t1_conn:
-            t1_conn.execute("DELETE FROM orders WHERE id = %s", [test_order_id])
-            source_max_updated_at = t1_conn.execute(
-                "SELECT COALESCE(MAX(updated_at), %s) FROM orders",
-                [now_utc],
-            ).fetchone()[0]
+            source_max_updated_at, source_max_id = t1_conn.execute(
+                "SELECT COALESCE(MAX(updated_at), %s), COALESCE(MAX(id), 0) "
+                "FROM orders",
+                [datetime.now(timezone.utc)],
+            ).fetchone()
             if source_max_updated_at.tzinfo is None:
                 source_max_updated_at = source_max_updated_at.replace(tzinfo=timezone.utc)
-            now_utc = max(now_utc, source_max_updated_at) + timedelta(microseconds=1)
+            test_order_id = int(source_max_id) + 1
+            now_utc = max(datetime.now(timezone.utc), source_max_updated_at) + timedelta(microseconds=1)
             t1_conn.execute(
                 """
                 INSERT INTO orders (id, tenant_id, customer_id, status, total_amount, created_at, updated_at)
@@ -406,12 +407,17 @@ def run_tests(network_url: str | None = None, live: bool = False, live2: bool = 
         else:
             raise AssertionError("FR-6 freshness was not observed within 10 minutes")
 
-        with get_tenant_pg_connection(1) as t1_conn:
-            t1_conn.execute("DELETE FROM orders WHERE id = %s", [test_order_id])
-
     print("\n" + "=" * 76)
     print("  ALL 10 VERIFICATION PHASES PASSED! ALL HACKATHON BENCHMARKS SATISFIED!")
     print("=" * 76)
+
+
+def _create_test_client():
+    """Create the in-process client only when network mode is not selected."""
+    from fastapi.testclient import TestClient
+
+    return TestClient(app)
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Verify the CyberForge aggregation API.")

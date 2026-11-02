@@ -173,7 +173,8 @@ def get_admin_metrics(
     summary="Run configurable development freshness test",
     description=(
         "Development-only endpoint. Inserts test orders into one tenant "
-        "database, waits for the replica, and removes them afterward. "
+        "database and waits for the replica. Test orders remain in the source "
+        "and replica so a later restart does not require a rebuild. "
         "Enable with ENABLE_TEST_UI=true."
     ),
 )
@@ -181,7 +182,7 @@ def run_freshness_test(
     request: FreshnessTestRequest,
     worker: SyncWorker = Depends(get_sync_worker),
 ) -> FreshnessTestResponse:
-    """Run an end-to-end insert, sync, observe, and cleanup test."""
+    """Run an end-to-end insert, sync, and observation test."""
     if not settings.enable_test_ui:
         raise HTTPException(
             status_code=404,
@@ -197,41 +198,40 @@ def run_freshness_test(
     after_count = 0
     after_revenue = before_revenue
 
-    try:
-        with get_tenant_pg_connection(request.tenant_id) as conn:
-            baseline = conn.execute(
-                "SELECT COUNT(*), COALESCE(SUM(total_amount), 0) FROM orders"
-            ).fetchone()
-            before_count, before_revenue = int(baseline[0]), float(baseline[1])
-            source_max = conn.execute(
-                "SELECT COALESCE(MAX(id), 0), COALESCE(MAX(updated_at), %s) "
-                "FROM orders",
-                [datetime.now(tz=timezone.utc)],
-            ).fetchone()
-            next_id = int(source_max[0]) + 1
-            updated_at = source_max[1]
-            if updated_at.tzinfo is None:
-                updated_at = updated_at.replace(tzinfo=timezone.utc)
-            updated_at = max(updated_at, datetime.now(tz=timezone.utc))
-            for offset in range(request.order_count):
-                order_id = next_id + offset
-                order_ids.append(order_id)
-                timestamp = updated_at + timedelta(microseconds=offset + 1)
-                conn.execute(
-                    """
-                    INSERT INTO orders
-                        (id, tenant_id, customer_id, status, total_amount,
-                         created_at, updated_at)
-                    VALUES (%s, %s, 1, 'placed', %s, %s, %s)
-                    """,
-                    [
-                        order_id,
-                        request.tenant_id,
-                        request.amount,
-                        timestamp,
-                        timestamp,
-                    ],
-                )
+    with get_tenant_pg_connection(request.tenant_id) as conn:
+        baseline = conn.execute(
+            "SELECT COUNT(*), COALESCE(SUM(total_amount), 0) FROM orders"
+        ).fetchone()
+        before_count, before_revenue = int(baseline[0]), float(baseline[1])
+        source_max = conn.execute(
+            "SELECT COALESCE(MAX(id), 0), COALESCE(MAX(updated_at), %s) "
+            "FROM orders",
+            [datetime.now(tz=timezone.utc)],
+        ).fetchone()
+        next_id = int(source_max[0]) + 1
+        updated_at = source_max[1]
+        if updated_at.tzinfo is None:
+            updated_at = updated_at.replace(tzinfo=timezone.utc)
+        updated_at = max(updated_at, datetime.now(tz=timezone.utc))
+        for offset in range(request.order_count):
+            order_id = next_id + offset
+            order_ids.append(order_id)
+            timestamp = updated_at + timedelta(microseconds=offset + 1)
+            conn.execute(
+                """
+                INSERT INTO orders
+                    (id, tenant_id, customer_id, status, total_amount,
+                     created_at, updated_at)
+                VALUES (%s, %s, 1, 'placed', %s, %s, %s)
+                """,
+                [
+                    order_id,
+                    request.tenant_id,
+                    request.amount,
+                    timestamp,
+                    timestamp,
+                ],
+            )
 
         deadline = started + request.max_wait_seconds
         detected = 0
@@ -266,25 +266,18 @@ def run_freshness_test(
             after_count = before_count + detected
             after_revenue = before_revenue + float(row[1])
 
-        freshness = time.monotonic() - started if detected == len(order_ids) else None
-        return FreshnessTestResponse(
-            tenant_id=request.tenant_id,
-            order_count=request.order_count,
-            orders_detected=detected,
-            order_ids=order_ids,
-            freshness_seconds=freshness,
-            order_count_before=before_count,
-            order_count_after=after_count,
-            revenue_delta=round(after_revenue - before_revenue, 2),
-            target_met=freshness is not None and freshness <= 30.0,
-        )
-    finally:
-        if order_ids:
-            with get_tenant_pg_connection(request.tenant_id) as conn:
-                conn.execute(
-                    "DELETE FROM orders WHERE id = ANY(%s)",
-                    [order_ids],
-                )
+    freshness = time.monotonic() - started if detected == len(order_ids) else None
+    return FreshnessTestResponse(
+        tenant_id=request.tenant_id,
+        order_count=request.order_count,
+        orders_detected=detected,
+        order_ids=order_ids,
+        freshness_seconds=freshness,
+        order_count_before=before_count,
+        order_count_after=after_count,
+        revenue_delta=round(after_revenue - before_revenue, 2),
+        target_met=freshness is not None and freshness <= 30.0,
+    )
 
 
 @router.post(

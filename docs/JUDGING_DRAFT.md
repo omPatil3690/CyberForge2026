@@ -198,11 +198,13 @@ timestamp was correctly skipped by the watermark query. FR-6 now inserts the
 test order strictly after the current source maximum timestamp and verifies the
 specific order ID.
 
-### Deletes and stale replicas
+### Freshness-test data policy
 
-The current incremental path is optimized for inserts and updates. A source
-delete can leave a stale replica row until validation/rebuild. A production
-extension would use tombstones, CDC, or an outbox/change log for deletions.
+FR-6 intentionally keeps its generated test orders in PostgreSQL and DuckDB.
+This keeps both source and replica consistent, so repeated tests and API
+restarts do not trigger a full rebuild. The trade-off is that each test
+increases the dataset slightly; a clean benchmark dataset can be regenerated
+before the final run.
 
 ### Windows file locking
 
@@ -222,8 +224,9 @@ offline isolation inspection is kept separate.
   rebuild temporarily uses additional disk space.
 - Bounded parallelism improves throughput, but is deliberately limited to
   avoid exhausting PostgreSQL connections and DuckDB resources.
-- The current deletion path is less complete than the insert/update path; CDC
-  or tombstones are the next production-hardening step.
+- FR-6 keeps test orders instead of deleting them, avoiding a rebuild caused by
+  unsupported source-delete propagation. A production delete workflow would
+  use CDC, tombstones, or an outbox/change log.
 - No UI is included yet. The REST API is complete and can be called from
   Postman, a frontend, a notebook, or any HTTP client.
 
