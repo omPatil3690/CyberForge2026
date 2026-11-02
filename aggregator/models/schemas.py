@@ -241,6 +241,31 @@ class AdminMetricsResponse(BaseModel):
     cache_hit_ratio: float
 
 
+class FreshnessTestRequest(BaseModel):
+    """Development-only controls for the interactive freshness test."""
+
+    tenant_id: int = Field(default=1, ge=1)
+    order_count: int = Field(default=1, ge=1, le=100)
+    amount: float = Field(default=8888.88, gt=0, le=1_000_000)
+    poll_interval_seconds: float = Field(default=5.0, ge=0.1, le=30.0)
+    max_wait_seconds: float = Field(default=120.0, ge=1.0, le=600.0)
+
+
+class FreshnessTestResponse(BaseModel):
+    """Result of the development-only end-to-end freshness test."""
+
+    tenant_id: int
+    order_count: int
+    orders_detected: int
+    order_ids: list[int]
+    freshness_seconds: float | None
+    order_count_before: int
+    order_count_after: int
+    revenue_delta: float
+    target_met: bool
+    target_seconds: float = 30.0
+
+
 # ---------------------------------------------------------------------------
 # Admin — Rebuild
 # ---------------------------------------------------------------------------
@@ -355,5 +380,4 @@ class CustomMetricResponse(FreshnessMixin):
     value: float
     from_date: datetime
     to_date: datetime
-
 

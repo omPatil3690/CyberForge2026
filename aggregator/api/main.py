@@ -18,11 +18,12 @@ from __future__ import annotations
 import logging
 import time
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import AsyncGenerator
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 
 from aggregator.api.dependencies import set_sync_worker
 from aggregator.api.routers import admin as admin_router
@@ -139,6 +140,14 @@ app.include_router(company_router.router)
 
 # Admin router: /admin/...
 app.include_router(admin_router.router)
+
+
+@app.get("/test-ui", include_in_schema=False)
+def test_ui() -> FileResponse:
+    """Serve the local development dashboard for API verification."""
+    return FileResponse(
+        Path(__file__).resolve().parents[2] / "static" / "test-ui.html"
+    )
 
 # ---------------------------------------------------------------------------
 # Root endpoint

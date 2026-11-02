@@ -132,6 +132,11 @@ class SyncWorker:
         self._tenant_ids: list[int] = []
         self._max_parallel_tenants = 4
 
+    @property
+    def tenant_ids(self) -> tuple[int, ...]:
+        """Return the tenant IDs discovered for this worker."""
+        return tuple(self._tenant_ids)
+
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
@@ -208,6 +213,7 @@ class SyncWorker:
                     if completed:
                         first_run = False
                         self._force_full_sync = False
+
                 else:
                     with self._sync_lock:
                         self._incremental_sync_all()

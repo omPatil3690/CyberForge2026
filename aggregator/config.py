@@ -105,6 +105,9 @@ class Settings:
         self.rate_limit_per_minute: int = int(
             os.getenv("RATE_LIMIT_PER_MINUTE", "60")
         )
+        self.enable_test_ui: bool = os.getenv("ENABLE_TEST_UI", "").lower() in {
+            "1", "true", "yes"
+        }
 
     # ------------------------------------------------------------------
     # Convenience helpers
