@@ -238,7 +238,11 @@ def open_tenant_duckdb_read_only(tenant_id: int) -> duckdb.DuckDBPyConnection:
     return duckdb.connect(database=str(db_path), read_only=True)
 
 
-def _initialize_schema(conn: duckdb.DuckDBPyConnection) -> None:
+def _initialize_schema(
+    conn: duckdb.DuckDBPyConnection,
+    *,
+    create_indexes: bool = True,
+) -> None:
     """Create the complete tenant replica schema on an open connection."""
     conn.execute(_DDL_SYNC_STATE)
     try:
@@ -250,7 +254,8 @@ def _initialize_schema(conn: duckdb.DuckDBPyConnection) -> None:
     conn.execute(_DDL_PRODUCTS)
     conn.execute(_DDL_SYNC_STATE)
     conn.execute(_DDL_HOURLY_METRICS)
-    conn.execute(_DDL_INDEXES)
+    if create_indexes:
+        conn.execute(_DDL_INDEXES)
 
 
 def create_tenant_staging(tenant_id: int) -> tuple[duckdb.DuckDBPyConnection, Path]:
@@ -259,9 +264,21 @@ def create_tenant_staging(tenant_id: int) -> tuple[duckdb.DuckDBPyConnection, Pa
     path = TENANTS_DIR / f".tenant_{tenant_id}.rebuild.{uuid.uuid4().hex}.duckdb"
     conn = duckdb.connect(database=str(path), read_only=False)
     with get_tenant_write_lock(tenant_id):
-        _initialize_schema(conn)
+        # Secondary indexes are built once after bulk loading. Maintaining
+        # them during millions of inserts is substantially slower.
+        _initialize_schema(conn, create_indexes=False)
     logger.info("Created staging DuckDB for tenant #%d at %r", tenant_id, path)
     return conn, path
+
+
+def build_tenant_indexes(
+    conn: duckdb.DuckDBPyConnection,
+    lock: threading.Lock | None = None,
+) -> None:
+    """Build analytical indexes after a full staging load."""
+    acquired = lock if lock is not None else DUCKDB_WRITE_LOCK
+    with acquired:
+        conn.execute(_DDL_INDEXES)
 
 
 def promote_tenant_staging(
@@ -491,22 +508,56 @@ def upsert_orders(
     acquired = lock if lock is not None else DUCKDB_WRITE_LOCK
 
     with acquired:
-        # Remove stale versions if present
-        conn.execute(
-            f"DELETE FROM orders WHERE id IN ({','.join('?' * len(ids))})",
-            ids,
-        )
-        conn.executemany(
-            """
-            INSERT INTO orders (
-                id, tenant_id, customer_id, status,
-                total_amount, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?)
-            """,
-            tuples,
-        )
+        conn.execute("BEGIN")
+        try:
+            conn.execute(
+                f"DELETE FROM orders WHERE id IN ({','.join('?' * len(ids))})",
+                ids,
+            )
+            conn.executemany(
+                """
+                INSERT INTO orders (
+                    id, tenant_id, customer_id, status,
+                    total_amount, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                tuples,
+            )
+            conn.execute("COMMIT")
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
 
     logger.debug("Upserted %d order rows into DuckDB.", len(tuples))
+    return len(tuples)
+
+
+def append_orders(
+    conn: duckdb.DuckDBPyConnection,
+    rows: Sequence[Any],
+    lock: threading.Lock | None = None,
+) -> int:
+    """Append a new full-load batch without delete-by-ID upsert overhead."""
+    if not rows:
+        return 0
+    tuples = _rows_to_tuples(rows)
+    acquired = lock if lock is not None else DUCKDB_WRITE_LOCK
+    with acquired:
+        conn.execute("BEGIN")
+        try:
+            conn.executemany(
+                """
+                INSERT INTO orders (
+                    id, tenant_id, customer_id, status,
+                    total_amount, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                tuples,
+            )
+            conn.execute("COMMIT")
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
     return len(tuples)
 
 
@@ -536,21 +587,56 @@ def upsert_order_items(
     acquired = lock if lock is not None else DUCKDB_WRITE_LOCK
 
     with acquired:
-        conn.execute(
-            f"DELETE FROM order_items WHERE id IN ({','.join('?' * len(ids))})",
-            ids,
-        )
-        conn.executemany(
-            """
-            INSERT INTO order_items (
-                id, order_id, tenant_id, product_id,
-                quantity, unit_price, total_price, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            tuples,
-        )
+        conn.execute("BEGIN")
+        try:
+            conn.execute(
+                f"DELETE FROM order_items WHERE id IN ({','.join('?' * len(ids))})",
+                ids,
+            )
+            conn.executemany(
+                """
+                INSERT INTO order_items (
+                    id, order_id, tenant_id, product_id,
+                    quantity, unit_price, total_price, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                tuples,
+            )
+            conn.execute("COMMIT")
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
 
     logger.debug("Upserted %d order_item rows into DuckDB.", len(tuples))
+    return len(tuples)
+
+
+def append_order_items(
+    conn: duckdb.DuckDBPyConnection,
+    rows: Sequence[Any],
+    lock: threading.Lock | None = None,
+) -> int:
+    """Append a new full-load batch without delete-by-ID upsert overhead."""
+    if not rows:
+        return 0
+    tuples = _rows_to_tuples(rows)
+    acquired = lock if lock is not None else DUCKDB_WRITE_LOCK
+    with acquired:
+        conn.execute("BEGIN")
+        try:
+            conn.executemany(
+                """
+                INSERT INTO order_items (
+                    id, order_id, tenant_id, product_id,
+                    quantity, unit_price, total_price, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                tuples,
+            )
+            conn.execute("COMMIT")
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
     return len(tuples)
 
 
@@ -580,20 +666,54 @@ def upsert_products(
     acquired = lock if lock is not None else DUCKDB_WRITE_LOCK
 
     with acquired:
-        conn.execute(
-            f"DELETE FROM products WHERE id IN ({','.join('?' * len(ids))})",
-            ids,
-        )
-        conn.executemany(
-            """
-            INSERT INTO products (
-                id, tenant_id, name, category, price, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?)
-            """,
-            tuples,
-        )
+        conn.execute("BEGIN")
+        try:
+            conn.execute(
+                f"DELETE FROM products WHERE id IN ({','.join('?' * len(ids))})",
+                ids,
+            )
+            conn.executemany(
+                """
+                INSERT INTO products (
+                    id, tenant_id, name, category, price, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                tuples,
+            )
+            conn.execute("COMMIT")
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
 
     logger.debug("Upserted %d product rows into DuckDB.", len(tuples))
+    return len(tuples)
+
+
+def append_products(
+    conn: duckdb.DuckDBPyConnection,
+    rows: Sequence[Any],
+    lock: threading.Lock | None = None,
+) -> int:
+    """Append products for a fresh staging replica."""
+    if not rows:
+        return 0
+    tuples = _rows_to_tuples(rows)
+    acquired = lock if lock is not None else DUCKDB_WRITE_LOCK
+    with acquired:
+        conn.execute("BEGIN")
+        try:
+            conn.executemany(
+                """
+                INSERT INTO products (
+                    id, tenant_id, name, category, price, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                tuples,
+            )
+            conn.execute("COMMIT")
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
     return len(tuples)
 
 

@@ -14,16 +14,16 @@ per-tenant file exclusively.
 Sync strategy
 -------------
 * **Initial full sync per tenant**: When ``tenant_{id}.duckdb`` has no
-  watermark (first run), paginate through that tenant's dedicated PostgreSQL
-  database using O(1) keyset pagination and write directly into
-  ``data/tenants/tenant_{id}.duckdb``.
+  validated watermark, paginate through that tenant's dedicated PostgreSQL
+  database using O(1) keyset pagination and write into an unindexed staging
+  DuckDB file. Indexes and rollups are built once before atomic promotion.
 * **Incremental sync per tenant**: After the initial sync, poll each tenant's
   PostgreSQL database for rows newer than the tenant's watermark and upsert
   them into the tenant's isolated DuckDB file.
 * **Products (full once per tenant)**: Products rarely change; synced once on
   startup or rebuild.
-* **Hourly rollup per tenant**: ``hourly_tenant_metrics`` is recomputed inside
-  each tenant's DuckDB file after every sync cycle.
+* **Hourly rollup per tenant**: ``hourly_tenant_metrics`` is computed once
+  after a full load and only affected buckets are refreshed incrementally.
 * **Watermarks per tenant**: Stored in ``sync_state`` inside each tenant's
   DuckDB file with key ``"orders"`` (tenant-local, not globally shared).
 
@@ -328,6 +328,7 @@ class SyncWorker:
             total += self._sync_orders_full_tenant(tenant_id, staging_conn, staging_lock)
             total += self._sync_order_items_full_tenant(tenant_id, staging_conn, staging_lock)
             store.recompute_hourly_metrics(staging_conn, staging_lock)
+            store.build_tenant_indexes(staging_conn, staging_lock)
 
             with get_tenant_pg_connection(tenant_id) as source:
                 expected_orders, expected_items = source.execute(
@@ -384,7 +385,7 @@ class SyncWorker:
                 "SELECT id, tenant_id, name, category, price, created_at FROM products"
             ).fetchall()
 
-        count = store.upsert_products(t_conn, rows, t_lock)
+        count = store.append_products(t_conn, rows, t_lock)
         logger.info("Tenant #%d: Products synced: %d rows.", tenant_id, count)
         return count
 
@@ -408,8 +409,8 @@ class SyncWorker:
         total = 0
         max_position: tuple[datetime, int] | None = None
 
-        while True:
-            with get_tenant_pg_connection(tenant_id) as conn:
+        with get_tenant_pg_connection(tenant_id) as conn:
+            while True:
                 rows = conn.execute(
                     """
                     SELECT id, tenant_id, customer_id, status,
@@ -422,29 +423,29 @@ class SyncWorker:
                     [last_id, _INITIAL_SYNC_BATCH],
                 ).fetchall()
 
-            if not rows:
-                break
+                if not rows:
+                    break
 
-            count = store.upsert_orders(t_conn, rows, t_lock)
-            total += count
-            last_id = rows[-1][0]
+                count = store.append_orders(t_conn, rows, t_lock)
+                total += count
+                last_id = rows[-1][0]
 
-            for row in rows:
-                row_updated_at = row[6]
-                if isinstance(row_updated_at, datetime):
-                    if row_updated_at.tzinfo is None:
-                        row_updated_at = row_updated_at.replace(tzinfo=timezone.utc)
-                    candidate = (row_updated_at, int(row[0]))
-                    if max_position is None or candidate > max_position:
-                        max_position = candidate
+                for row in rows:
+                    row_updated_at = row[6]
+                    if isinstance(row_updated_at, datetime):
+                        if row_updated_at.tzinfo is None:
+                            row_updated_at = row_updated_at.replace(tzinfo=timezone.utc)
+                        candidate = (row_updated_at, int(row[0]))
+                        if max_position is None or candidate > max_position:
+                            max_position = candidate
 
-            logger.info(
-                "Tenant #%d: Orders synced so far: %d (last_id=%d)",
-                tenant_id, total, last_id,
-            )
+                logger.info(
+                    "Tenant #%d: Orders synced so far: %d (last_id=%d)",
+                    tenant_id, total, last_id,
+                )
 
-            if len(rows) < _INITIAL_SYNC_BATCH:
-                break
+                if len(rows) < _INITIAL_SYNC_BATCH:
+                    break
 
         if max_position is not None:
             store.set_last_sync_position(
@@ -477,8 +478,8 @@ class SyncWorker:
         last_id = 0
         total = 0
 
-        while True:
-            with get_tenant_pg_connection(tenant_id) as conn:
+        with get_tenant_pg_connection(tenant_id) as conn:
+            while True:
                 rows = conn.execute(
                     """
                     SELECT id, order_id, tenant_id, product_id,
@@ -491,20 +492,20 @@ class SyncWorker:
                     [last_id, _INITIAL_SYNC_BATCH],
                 ).fetchall()
 
-            if not rows:
-                break
+                if not rows:
+                    break
 
-            count = store.upsert_order_items(t_conn, rows, t_lock)
-            total += count
-            last_id = rows[-1][0]
+                count = store.append_order_items(t_conn, rows, t_lock)
+                total += count
+                last_id = rows[-1][0]
 
-            logger.info(
-                "Tenant #%d: Order items synced so far: %d (last_id=%d)",
-                tenant_id, total, last_id,
-            )
+                logger.info(
+                    "Tenant #%d: Order items synced so far: %d (last_id=%d)",
+                    tenant_id, total, last_id,
+                )
 
-            if len(rows) < _INITIAL_SYNC_BATCH:
-                break
+                if len(rows) < _INITIAL_SYNC_BATCH:
+                    break
 
         logger.info(
             "Tenant #%d: Full order_items sync complete: %d rows.", tenant_id, total
