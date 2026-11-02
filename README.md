@@ -432,6 +432,28 @@ python scripts/generate_data.py --orders 10000 --tenants 10
 python scripts/generate_data.py --orders 1000000 --tenants 10
 ```
 
+### Direct large-scale tenant population
+
+For large benchmark runs, operational rows can be generated directly into
+isolated tenant PostgreSQL databases instead of being generated centrally and
+copied afterward:
+
+```powershell
+.\.venv\Scripts\python.exe scripts\populate_tenants_direct.py `
+  --tenants 100 `
+  --orders 10000000 `
+  --batch-size 50000 `
+  --parallel-tenants 2
+```
+
+The central `cyberforge` database stores only company/tenant metadata and a
+`tenant_population_status` checkpoint table. The script uses bounded
+PostgreSQL `COPY` batches, validates that timestamps are not in the future,
+and creates secondary indexes after loading. A completed tenant is skipped on
+restart. A failed or interrupted tenant is reset and repopulated without
+touching completed tenants. Start the API only after all tenant population
+statuses are `completed`.
+
 ### 5. Start the Aggregator Service
 ```bash
 python run_aggregator.py
