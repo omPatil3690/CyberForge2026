@@ -20,6 +20,9 @@ if __name__ == "__main__":
         "aggregator.api.main:app",
         host="0.0.0.0",
         port=8000,
+        # uvloop currently aborts during loop initialization on some
+        # macOS/Python 3.14 combinations; the stdlib loop is reliable.
+        loop="asyncio",
         reload=False,
         log_level="info",
     )
