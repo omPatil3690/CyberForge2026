@@ -18,16 +18,17 @@ from __future__ import annotations
 import logging
 import time
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import AsyncGenerator
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 
-from aggregator.api.dependencies import set_duckdb_connection, set_sync_worker
+from aggregator.api.dependencies import set_sync_worker
 from aggregator.api.routers import admin as admin_router
+from aggregator.api.routers import company as company_router
 from aggregator.api.routers import metrics as metrics_router
-from aggregator.database.duckdb_store import init_duckdb
 from aggregator.database.postgres import close_pool
 from aggregator.models.schemas import APIInfoResponse
 from aggregator.sync.worker import SyncWorker
@@ -50,11 +51,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Manage startup and shutdown of stateful resources.
 
     Startup sequence:
-        1. Open DuckDB connection and create schema (idempotent).
-        2. Register DuckDB connection with the dependency layer.
-        3. Create and start SyncWorker daemon thread.
-        4. Register SyncWorker with the dependency layer.
-        5. Block (with a short poll) until the initial sync marks ``is_ready``.
+        1. Create and start the per-tenant SyncWorker daemon thread.
+        2. Register SyncWorker with the dependency layer.
+        3. Block (with a short poll) until the initial sync marks ``is_ready``.
 
     Shutdown sequence:
         1. Stop SyncWorker (signals the daemon thread and waits).
@@ -65,26 +64,25 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """
     logger.info("=== CyberForge Aggregation Layer — starting up ===")
 
-    # 1. Init DuckDB
-    duck_conn = init_duckdb()
-    set_duckdb_connection(duck_conn)
-
-    # 2. Create and start sync worker
-    worker = SyncWorker(duck_conn)
+    # Create and start the per-tenant sync worker.
+    worker = SyncWorker()
     set_sync_worker(worker)
     worker.start()
 
-    # 3. Wait for the initial sync to complete before serving requests
+    # 2. Wait for the initial sync to complete before serving requests
     logger.info("Waiting for initial sync to complete…")
     _wait_start = time.monotonic()
+    last_wait_log = _wait_start
     while not worker.is_ready:
         time.sleep(0.5)
-        elapsed = time.monotonic() - _wait_start
-        if elapsed > 600:  # 10-minute guard for extremely large datasets
+        now = time.monotonic()
+        if now - last_wait_log >= 30:
             logger.warning(
-                "Initial sync taking longer than 10 minutes — starting API anyway."
+                "Initial sync is still in progress after %.1f s; "
+                "API remains unavailable until every tenant is validated.",
+                now - _wait_start,
             )
-            break
+            last_wait_log = now
 
     logger.info(
         "Initial sync complete in %.1f s. API is ready.",
@@ -137,8 +135,19 @@ app.add_middleware(
 # Metrics router: /tenants/{tenant_id}/metrics/...
 app.include_router(metrics_router.router)
 
+# Company owner multi-store router: /companies/{company_id}/metrics/...
+app.include_router(company_router.router)
+
 # Admin router: /admin/...
 app.include_router(admin_router.router)
+
+
+@app.get("/test-ui", include_in_schema=False)
+def test_ui() -> FileResponse:
+    """Serve the local development dashboard for API verification."""
+    return FileResponse(
+        Path(__file__).resolve().parents[2] / "static" / "test-ui.html"
+    )
 
 # ---------------------------------------------------------------------------
 # Root endpoint
@@ -170,6 +179,12 @@ def root() -> APIInfoResponse:
                 "trend":            "GET /tenants/{tenant_id}/metrics/trend",
                 "top_products":     "GET /tenants/{tenant_id}/metrics/top-products",
                 "status_breakdown": "GET /tenants/{tenant_id}/metrics/breakdown/status",
+            },
+            "company": {
+                "summary":          "GET /companies/{company_id}/metrics/summary",
+                "trend":            "GET /companies/{company_id}/metrics/trend",
+                "top_products":     "GET /companies/{company_id}/metrics/top-products",
+                "status_breakdown": "GET /companies/{company_id}/metrics/breakdown/status",
             },
             "admin": {
                 "health":  "GET  /admin/health",

@@ -1,15 +1,8 @@
 """
 aggregator/api/dependencies.py — Shared FastAPI dependency-injection helpers.
 
-Provides:
-  - ``get_duckdb``      — yields the global DuckDB connection.
-  - ``check_rate_limit`` — sliding-window per-tenant rate limiter (60 req/min).
-
-Threading note
---------------
-``get_duckdb`` does *not* acquire ``DUCKDB_WRITE_LOCK`` itself; individual
-query helpers in ``duckdb_store`` acquire the lock as needed.  The dependency
-simply returns the connection so callers can execute queries.
+Provides shared FastAPI dependencies for tenant database access, sync-worker
+readiness, and per-tenant rate limiting.
 """
 
 from __future__ import annotations
@@ -20,44 +13,25 @@ import threading
 from typing import Generator
 
 import duckdb
-from fastapi import Depends, HTTPException, status
+from fastapi import HTTPException, status
 
 from aggregator.config import settings
 
-# ---------------------------------------------------------------------------
-# DuckDB connection dependency
-# ---------------------------------------------------------------------------
+def get_tenant_db(tenant_id: int) -> duckdb.DuckDBPyConnection:
+    """FastAPI dependency providing strict Database-per-Tenant physical isolation.
 
-# Set by aggregator/api/main.py during the lifespan startup hook
-_duckdb_conn: duckdb.DuckDBPyConnection | None = None
-
-
-def set_duckdb_connection(conn: duckdb.DuckDBPyConnection) -> None:
-    """Register the global DuckDB connection (called once during startup).
-
-    Args:
-        conn: The open DuckDB connection returned by ``init_duckdb()``.
+    Directs all dashboard queries to the tenant's isolated DuckDB file
+    at ``data/tenants/tenant_{tenant_id}.duckdb``.
     """
-    global _duckdb_conn  # noqa: PLW0603
-    _duckdb_conn = conn
-
-
-def get_duckdb() -> Generator[duckdb.DuckDBPyConnection, None, None]:
-    """FastAPI dependency that yields the shared DuckDB connection.
-
-    Raises:
-        HTTPException 503: If the DuckDB connection has not been initialised
-            yet (e.g. the API received a request before startup completed).
-
-    Yields:
-        The global ``duckdb.DuckDBPyConnection`` instance.
-    """
-    if _duckdb_conn is None:
+    from aggregator.database.duckdb_store import get_tenant_duckdb
+    try:
+        return get_tenant_duckdb(tenant_id)
+    except Exception as exc:
         raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="DuckDB is not initialised. The service is starting up.",
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to access isolated database for tenant #{tenant_id}: {exc}",
         )
-    yield _duckdb_conn
+
 
 
 # ---------------------------------------------------------------------------

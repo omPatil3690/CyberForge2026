@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CyberForge Verification Console</title>
+  <style>
+    :root { color-scheme: dark; font-family: system-ui, sans-serif; }
+    body { margin: 0; background: #101827; color: #e5edf8; }
+    main { max-width: 1100px; margin: 36px auto; padding: 0 20px; }
+    h1 { margin-bottom: 4px; } .muted { color: #9fb0c8; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit,minmax(240px,1fr)); gap: 14px; }
+    .card { background: #18243a; border: 1px solid #2b3d5d; border-radius: 12px; padding: 18px; }
+    .value { font-size: 1.7rem; font-weight: 700; margin-top: 8px; }
+    label { display: block; margin-top: 12px; color: #b6c6dc; }
+    input, button { box-sizing: border-box; width: 100%; padding: 10px; margin-top: 5px;
+      border-radius: 7px; border: 1px solid #405578; background: #0e1728; color: inherit; }
+    button { cursor: pointer; background: #2563eb; border: 0; font-weight: 700; margin-top: 16px; }
+    button.secondary { background: #334155; } pre { white-space: pre-wrap; overflow: auto; }
+    .ok { color: #6ee7b7; } .warn { color: #fbbf24; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>CyberForge Verification Console</h1>
+  <p class="muted">Development dashboard for health, latency, API calls, and FR-6 freshness.</p>
+  <section class="grid">
+    <div class="card"><div class="muted">Replica orders</div><div id="orders" class="value">—</div></div>
+    <div class="card"><div class="muted">Data freshness</div><div id="freshness" class="value">—</div></div>
+    <div class="card"><div class="muted">p50 / p95 / p99 latency</div><div id="latency" class="value">—</div></div>
+  </section>
+  <section class="grid" style="margin-top:14px">
+    <div class="card">
+      <h2>FR-6 freshness test</h2>
+      <p class="muted">The API inserts test orders and keeps them synchronized for restart-safe testing.</p>
+      <label>Tenant ID <input id="tenant" type="number" value="1" min="1"></label>
+      <label>New orders <input id="count" type="number" value="1" min="1" max="100"></label>
+      <label>Amount per order <input id="amount" type="number" value="8888.88" min="0.01"></label>
+      <label>Poll interval (seconds) <input id="interval" type="number" value="5" min="0.1" step="0.1"></label>
+      <label>Maximum wait (seconds) <input id="wait" type="number" value="120" min="1"></label>
+      <button onclick="runFreshness()">Run freshness test</button>
+    </div>
+    <div class="card">
+      <h2>API checks</h2>
+      <button class="secondary" onclick="loadHealth()">Refresh health and latency</button>
+      <button class="secondary" onclick="callSummary()">Call company summary</button>
+      <pre id="result">No test run yet.</pre>
+    </div>
+  </section>
+</main>
+<script>
+async function getJson(path, options) {
+  const response = await fetch(path, options);
+  const body = await response.json();
+  if (!response.ok) throw new Error(body.detail || `HTTP ${response.status}`);
+  return body;
+}
+async function loadHealth() {
+  try {
+    const [health, metrics] = await Promise.all([getJson('/admin/health'), getJson('/admin/metrics')]);
+    orders.textContent = health.duckdb_order_count.toLocaleString();
+    freshness.textContent = `${health.data_freshness_seconds.toFixed(2)} s`;
+    latency.textContent = `${metrics.query_latency_p50_ms} / ${metrics.query_latency_p95_ms} / ${metrics.query_latency_p99_ms} ms`;
+    result.textContent = JSON.stringify({health, metrics}, null, 2);
+  } catch (error) { result.textContent = error.message; }
+}
+async function callSummary() {
+  try {
+    const started = performance.now();
+    const body = await getJson('/companies/1/metrics/summary?from_date=2020-01-01T00:00:00Z&to_date=2100-01-01T00:00:00Z');
+    result.textContent = JSON.stringify({latency_ms: +(performance.now() - started).toFixed(2), body}, null, 2);
+  } catch (error) { result.textContent = error.message; }
+}
+async function runFreshness() {
+  result.textContent = 'Running...';
+  try {
+    const body = await getJson('/admin/test/freshness', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        tenant_id: +tenant.value, order_count: +count.value, amount: +amount.value,
+        poll_interval_seconds: +interval.value, max_wait_seconds: +wait.value
+      })
+    });
+    result.innerHTML = `<span class="${body.target_met ? 'ok' : 'warn'}">${body.target_met ? 'TARGET MET' : 'TARGET MISSED'}</span>\n` + JSON.stringify(body, null, 2);
+    loadHealth();
+  } catch (error) { result.textContent = error.message; }
+}
+loadHealth();
+</script>
+</body>
+</html>

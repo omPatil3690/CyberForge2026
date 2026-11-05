@@ -5,6 +5,8 @@ __pycache__/
 *.log
 .env
 system.md
+data
+aggregator.duckdb
 *.duckdb
 *.duckdb.wal
 *.duckdb.tmp

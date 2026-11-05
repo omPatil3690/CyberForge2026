@@ -1,5 +1,75 @@
 # Multi-Tenant Aggregation Layer: Architecture, Roadmap & Work Split
 
+# CyberForge — System Design
+
+```mermaid
+flowchart LR
+    subgraph USERS["USERS"]
+        STORE["Store owner"]
+        COMPANY["Company owner"]
+    end
+
+    subgraph SOURCE["SOURCE OF TRUTH  ·  OLTP"]
+        PG["PostgreSQL<br/><small>companies · tenants · orders<br/>customers · products</small>"]
+    end
+
+    subgraph REPLICATION["INCREMENTAL REPLICATION"]
+        WORKER["Sync worker<br/><small>watermark polling · every 5s</small>"]
+        DUCK["DuckDB replicas<br/><small>one isolated file per tenant<br/>columnar OLAP storage</small>"]
+        WORKER -->|"changed rows only"| DUCK
+    end
+
+    subgraph SERVING["SERVING LAYER"]
+        API["FastAPI<br/><small>tenant isolation · rate limits</small>"]
+        METRICS["Metrics API<br/><small>summary · trend<br/>top products · status</small>"]
+        ADMIN["Admin API<br/><small>health · latency · rebuild</small>"]
+        API --> METRICS
+        API --> ADMIN
+    end
+
+    subgraph EXPERIENCE["EXPERIENCE"]
+        DASH["Analytics dashboard<br/><small>fast, fresh insights</small>"]
+        EVAL["Benchmark & validation"]
+    end
+
+    PG -->|"low-load incremental sync"| WORKER
+    DUCK -->|"sub-50ms analytical reads"| API
+    STORE -->|"tenant metrics"| DASH
+    COMPANY -->|"cross-store metrics"| DASH
+    DASH -->|"REST / JSON"| METRICS
+    EVAL -->|"REST / health checks"| API
+    ADMIN -. "full rebuild" .-> WORKER
+    API -. "freshness + performance" .-> DASH
+
+    classDef user fill:#172554,stroke:#60a5fa,color:#eff6ff,stroke-width:2px
+    classDef source fill:#3f1d0b,stroke:#fb923c,color:#fff7ed,stroke-width:2px
+    classDef sync fill:#123b32,stroke:#34d399,color:#ecfdf5,stroke-width:2px
+    classDef serve fill:#312e81,stroke:#a78bfa,color:#f5f3ff,stroke-width:2px
+    classDef experience fill:#164e63,stroke:#22d3ee,color:#ecfeff,stroke-width:2px
+
+    class STORE,COMPANY user
+    class PG source
+    class WORKER,DUCK sync
+    class API,METRICS,ADMIN serve
+    class DASH,EVAL experience
+
+    style USERS fill:#0f172a,stroke:#334155,color:#e2e8f0
+    style SOURCE fill:#1c1917,stroke:#57534e,color:#e7e5e4
+    style REPLICATION fill:#052e2b,stroke:#166534,color:#d1fae5
+    style SERVING fill:#1e1b4b,stroke:#4338ca,color:#ede9fe
+    style EXPERIENCE fill:#083344,stroke:#0e7490,color:#cffafe
+```
+
+### Design at a glance
+
+| Path | Purpose | Key guarantee |
+|---|---|---|
+| **Write path** | PostgreSQL → sync worker → DuckDB | Dashboard traffic never hits OLTP |
+| **Read path** | Dashboard → FastAPI → DuckDB | Fast, tenant-isolated analytics |
+| **Recovery path** | Admin API → sync worker | Rebuild replicas without changing the API |
+
+**Why it scales:** each tenant has an isolated DuckDB replica, so sync and reads stay local to that tenant while company owners can query across their permitted stores through the same API.
+
 ## 1. Project Organization & Team Division
 
 | Component | Owner | Scope & Deliverables |

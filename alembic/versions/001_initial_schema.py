@@ -19,16 +19,27 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    # 1. Tenants table
+    # 1. Company-owner control-plane table
     op.create_table(
-        'tenants',
+        'companies',
         sa.Column('id', sa.Integer(), autoincrement=True, nullable=False),
         sa.Column('name', sa.String(length=255), nullable=False),
         sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
         sa.PrimaryKeyConstraint('id')
     )
 
-    # 2. Customers table
+    # 2. Tenants table
+    op.create_table(
+        'tenants',
+        sa.Column('id', sa.Integer(), autoincrement=True, nullable=False),
+        sa.Column('name', sa.String(length=255), nullable=False),
+        sa.Column('company_id', sa.Integer(), nullable=False),
+        sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
+        sa.ForeignKeyConstraint(['company_id'], ['companies.id'], ondelete='CASCADE'),
+        sa.PrimaryKeyConstraint('id')
+    )
+
+    # 3. Customers table
     op.create_table(
         'customers',
         sa.Column('id', sa.Integer(), autoincrement=True, nullable=False),
@@ -41,7 +52,7 @@ def upgrade() -> None:
     )
     op.create_index('idx_customers_tenant', 'customers', ['tenant_id'], unique=False)
 
-    # 3. Products table
+    # 4. Products table
     op.create_table(
         'products',
         sa.Column('id', sa.Integer(), autoincrement=True, nullable=False),
@@ -56,7 +67,7 @@ def upgrade() -> None:
     op.create_index('idx_products_tenant', 'products', ['tenant_id'], unique=False)
     op.create_index('idx_products_tenant_category', 'products', ['tenant_id', 'category'], unique=False)
 
-    # 4. Orders table
+    # 5. Orders table
     op.create_table(
         'orders',
         sa.Column('id', sa.Integer(), autoincrement=True, nullable=False),
@@ -74,7 +85,7 @@ def upgrade() -> None:
     op.create_index('idx_orders_tenant_created', 'orders', ['tenant_id', 'created_at'], unique=False)
     op.create_index('idx_orders_tenant_status', 'orders', ['tenant_id', 'status'], unique=False)
 
-    # 5. Order items table
+    # 6. Order items table
     op.create_table(
         'order_items',
         sa.Column('id', sa.Integer(), autoincrement=True, nullable=False),
@@ -102,3 +113,4 @@ def downgrade() -> None:
     op.drop_table('products')
     op.drop_table('customers')
     op.drop_table('tenants')
+    op.drop_table('companies')

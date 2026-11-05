@@ -18,16 +18,20 @@ import collections
 import logging
 import statistics
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import duckdb
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 
-from aggregator.api.dependencies import get_duckdb, get_sync_worker
-from aggregator.database.duckdb_store import DUCKDB_WRITE_LOCK, duckdb_order_count
-from aggregator.database.postgres import pg_order_count_estimate
+from aggregator.api.dependencies import get_sync_worker
+from aggregator.config import settings
+from aggregator.database import duckdb_store
+from aggregator.database.duckdb_store import duckdb_total_orders
+from aggregator.database.postgres import get_tenant_pg_connection, pg_order_count_estimate
 from aggregator.models.schemas import (
     AdminMetricsResponse,
+    FreshnessTestRequest,
+    FreshnessTestResponse,
     HealthResponse,
     RebuildResponse,
 )
@@ -90,13 +94,11 @@ def _percentile(data: list[float], pct: float) -> float:
     ),
 )
 def health_check(
-    conn: duckdb.DuckDBPyConnection = Depends(get_duckdb),
     worker: SyncWorker = Depends(get_sync_worker),
 ) -> HealthResponse:
     """Return service health metrics.
 
     Args:
-        conn:   Injected DuckDB connection.
         worker: Injected SyncWorker for sync state.
 
     Returns:
@@ -110,7 +112,8 @@ def health_check(
     else:
         freshness = 9999.0
 
-    duck_count = duckdb_order_count(conn)
+    # Count total orders across all isolated tenant DuckDB files
+    duck_count = duckdb_total_orders()
     pg_estimate = pg_order_count_estimate()
     uptime = time.monotonic() - _PROCESS_START
 
@@ -161,6 +164,119 @@ def get_admin_metrics(
         total_syncs=worker.total_syncs,
         # All dashboard queries hit DuckDB — never PostgreSQL — so cache hit = 1.0
         cache_hit_ratio=1.0,
+    )
+
+
+@router.post(
+    "/test/freshness",
+    response_model=FreshnessTestResponse,
+    summary="Run configurable development freshness test",
+    description=(
+        "Development-only endpoint. Inserts test orders into one tenant "
+        "database and waits for the replica. Test orders remain in the source "
+        "and replica so a later restart does not require a rebuild. "
+        "Enable with ENABLE_TEST_UI=true."
+    ),
+)
+def run_freshness_test(
+    request: FreshnessTestRequest,
+    worker: SyncWorker = Depends(get_sync_worker),
+) -> FreshnessTestResponse:
+    """Run an end-to-end insert, sync, and observation test."""
+    if not settings.enable_test_ui:
+        raise HTTPException(
+            status_code=404,
+            detail="Test UI is disabled. Set ENABLE_TEST_UI=true for development.",
+        )
+    if request.tenant_id not in worker.tenant_ids:
+        raise HTTPException(status_code=404, detail="Tenant does not exist.")
+
+    started = time.monotonic()
+    order_ids: list[int] = []
+    before_count = 0
+    before_revenue = 0.0
+    after_count = 0
+    after_revenue = before_revenue
+
+    with get_tenant_pg_connection(request.tenant_id) as conn:
+        baseline = conn.execute(
+            "SELECT COUNT(*), COALESCE(SUM(total_amount), 0) FROM orders"
+        ).fetchone()
+        before_count, before_revenue = int(baseline[0]), float(baseline[1])
+        source_max = conn.execute(
+            "SELECT COALESCE(MAX(id), 0), COALESCE(MAX(updated_at), %s) "
+            "FROM orders",
+            [datetime.now(tz=timezone.utc)],
+        ).fetchone()
+        next_id = int(source_max[0]) + 1
+        updated_at = source_max[1]
+        if updated_at.tzinfo is None:
+            updated_at = updated_at.replace(tzinfo=timezone.utc)
+        updated_at = max(updated_at, datetime.now(tz=timezone.utc))
+        for offset in range(request.order_count):
+            order_id = next_id + offset
+            order_ids.append(order_id)
+            timestamp = updated_at + timedelta(microseconds=offset + 1)
+            conn.execute(
+                """
+                INSERT INTO orders
+                    (id, tenant_id, customer_id, status, total_amount,
+                     created_at, updated_at)
+                VALUES (%s, %s, 1, 'placed', %s, %s, %s)
+                """,
+                [
+                    order_id,
+                    request.tenant_id,
+                    request.amount,
+                    timestamp,
+                    timestamp,
+                ],
+            )
+
+        deadline = started + request.max_wait_seconds
+        detected = 0
+        while time.monotonic() < deadline:
+            time.sleep(request.poll_interval_seconds)
+            conn = duckdb_store.get_tenant_duckdb(request.tenant_id)
+            with duckdb_store.get_tenant_write_lock(request.tenant_id):
+                row = conn.execute(
+                    "SELECT COUNT(*), COALESCE(SUM(total_amount), 0) "
+                    "FROM orders WHERE id IN ("
+                    + ",".join("?" for _ in order_ids)
+                    + ")",
+                    order_ids,
+                ).fetchone()
+            detected = int(row[0])
+            if detected == len(order_ids):
+                after_count = before_count + detected
+                after_revenue = before_revenue + float(row[1])
+                break
+
+        if detected != len(order_ids):
+            conn = duckdb_store.get_tenant_duckdb(request.tenant_id)
+            with duckdb_store.get_tenant_write_lock(request.tenant_id):
+                row = conn.execute(
+                    "SELECT COUNT(*), COALESCE(SUM(total_amount), 0) "
+                    "FROM orders WHERE id IN ("
+                    + ",".join("?" for _ in order_ids)
+                    + ")",
+                    order_ids,
+                ).fetchone()
+            detected = int(row[0])
+            after_count = before_count + detected
+            after_revenue = before_revenue + float(row[1])
+
+    freshness = time.monotonic() - started if detected == len(order_ids) else None
+    return FreshnessTestResponse(
+        tenant_id=request.tenant_id,
+        order_count=request.order_count,
+        orders_detected=detected,
+        order_ids=order_ids,
+        freshness_seconds=freshness,
+        order_count_before=before_count,
+        order_count_after=after_count,
+        revenue_delta=round(after_revenue - before_revenue, 2),
+        target_met=freshness is not None and freshness <= 30.0,
     )
 
 

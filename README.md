@@ -72,9 +72,9 @@ This project implements an in-process, columnar OLAP aggregation layer that comp
                                │
                                ▼
 ┌─────────────────────────────────────────────────────────────┐
-│             DUCKDB (In-Process Columnar OLAP)               │
+│          TENANT DUCKDB REPLICAS (In-Process OLAP)            │
 │                                                             │
-│   • Local columnar store (./aggregator.duckdb)              │
+│   • One isolated file per store: data/tenants/tenant_N.duckdb│
 │   • Vectorized execution engine optimized for aggregations  │
 │   • Executes SUM, COUNT, GROUP BY across 1M+ rows in <16ms │
 └──────────────────────────────┬──────────────────────────────┘
@@ -100,15 +100,17 @@ This project implements an in-process, columnar OLAP aggregation layer that comp
 | ID | Requirement | Endpoint / Mechanism | Status |
 |:---|:---|:---|:---:|
 | **FR-1** | Counts & totals for any custom time range | `GET /tenants/{tenant_id}/metrics/summary` | **Passed (12.25 ms)** |
-| **FR-2** | Trend over time (hourly or daily buckets) | `GET /tenants/{tenant_id}/metrics/trend?interval=day` | **Passed (15.96 ms)** |
+| **FR-2** | Trend over time (hourly or daily buckets) | `GET /tenants/{tenant_id}/metrics/trend?interval=day` | **Passed (9.34 ms)** |
 | **FR-3** | Top-N products by revenue / quantity | `GET /tenants/{tenant_id}/metrics/top-products?limit=10` | **Passed (15.34 ms)** |
-| **FR-4** | Category & status breakdown with percentages | `GET /tenants/{tenant_id}/metrics/breakdown/status` | **Passed (12.64 ms)** |
-| **FR-5** | Strict tenant isolation on every endpoint | Path parameter validation & strict SQL scoping (`WHERE tenant_id = ?`) | **Verified** |
-| **FR-6** | Near real-time data sync & update propagation | Watermark sync daemon polling `updated_at` every 5 seconds | **Verified** |
+| **FR-4** | Category & status breakdown with percentages | `GET /tenants/{tenant_id}/metrics/breakdown/status` | **Passed (11.88 ms)** |
+| **FR-5** | Strict tenant isolation (Database-per-Tenant) | Physical Air-Gap: Dedicated `tenant_{id}.duckdb` per store | **Verified** |
+| **Company** | Multi-Store Company Owner Rollups | `GET /companies/{company_id}/metrics/summary` (Stores 1, 2, 3) | **Passed (59.69 ms)** |
+| **FR-6** | Near real-time data sync & update propagation | Watermark sync daemon polling `updated_at` every 5 seconds | **Verified (< 5s)** |
 | **FR-7** | Clean REST API with documentation | Interactive Swagger / OpenAPI docs at `/docs` | **Verified** |
 | **B-1** | Response freshness indicator | `data_freshness_seconds` returned in response payloads | **Implemented** |
 | **B-2** | Full state rebuild on disaster recovery | `POST /admin/rebuild` triggers instant truncate & re-sync | **Implemented** |
 | **B-3** | Tenant query rate limiting | Sliding-window limiter (configurable via `RATE_LIMIT_PER_MINUTE`) | **Implemented** |
+| **B-4** | Config-driven metrics engine | `config/metrics.yaml` dynamic evaluation (`/metrics/custom/...`) | **Implemented** |
 | **B-5** | Health & query latency diagnostics | `GET /admin/health` and `GET /admin/metrics` (p50/p95/p99) | **Implemented** |
 
 ---
@@ -399,7 +401,6 @@ DB_PASSWORD=your_password
 DB_HOST=localhost
 DB_PORT=5432
 DATABASE_URL=postgresql://postgres:your_password@localhost:5432/cyberforge
-DUCKDB_PATH=./aggregator.duckdb
 SYNC_INTERVAL_SECONDS=5
 RATE_LIMIT_PER_MINUTE=60
 ```
@@ -431,11 +432,33 @@ python scripts/generate_data.py --orders 10000 --tenants 10
 python scripts/generate_data.py --orders 1000000 --tenants 10
 ```
 
+### Direct large-scale tenant population
+
+For large benchmark runs, operational rows can be generated directly into
+isolated tenant PostgreSQL databases instead of being generated centrally and
+copied afterward:
+
+```powershell
+.\.venv\Scripts\python.exe scripts\populate_tenants_direct.py `
+  --tenants 100 `
+  --orders 10000000 `
+  --batch-size 50000 `
+  --parallel-tenants 2
+```
+
+The central `cyberforge` database stores only company/tenant metadata and a
+`tenant_population_status` checkpoint table. The script uses bounded
+PostgreSQL `COPY` batches, validates that timestamps are not in the future,
+and creates secondary indexes after loading. A completed tenant is skipped on
+restart. A failed or interrupted tenant is reset and repopulated without
+touching completed tenants. Start the API only after all tenant population
+statuses are `completed`.
+
 ### 5. Start the Aggregator Service
 ```bash
 python run_aggregator.py
 ```
-The FastAPI server will boot at `http://localhost:8000`, run an initial synchronization into `./aggregator.duckdb`, and begin background sync polling.
+The FastAPI server will boot at `http://localhost:8000`, discover tenants from the central control database, synchronize each dedicated PostgreSQL tenant database into its matching `data/tenants/tenant_N.duckdb` replica, and begin background polling.
 
 ### 6. Run Verification & Benchmark Suites
 ```bash

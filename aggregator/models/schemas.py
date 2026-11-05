@@ -241,6 +241,31 @@ class AdminMetricsResponse(BaseModel):
     cache_hit_ratio: float
 
 
+class FreshnessTestRequest(BaseModel):
+    """Development-only controls for the interactive freshness test."""
+
+    tenant_id: int = Field(default=1, ge=1)
+    order_count: int = Field(default=1, ge=1, le=100)
+    amount: float = Field(default=8888.88, gt=0, le=1_000_000)
+    poll_interval_seconds: float = Field(default=5.0, ge=0.1, le=30.0)
+    max_wait_seconds: float = Field(default=120.0, ge=1.0, le=600.0)
+
+
+class FreshnessTestResponse(BaseModel):
+    """Result of the development-only end-to-end freshness test."""
+
+    tenant_id: int
+    order_count: int
+    orders_detected: int
+    order_ids: list[int]
+    freshness_seconds: float | None
+    order_count_before: int
+    order_count_after: int
+    revenue_delta: float
+    target_met: bool
+    target_seconds: float = 30.0
+
+
 # ---------------------------------------------------------------------------
 # Admin — Rebuild
 # ---------------------------------------------------------------------------
@@ -281,3 +306,78 @@ class APIInfoResponse(BaseModel):
     description: str
     docs_url: str
     endpoints: dict[str, Any]
+
+
+# ---------------------------------------------------------------------------
+# Company Owner — Multi-Store Aggregated Rollup Schemas
+# ---------------------------------------------------------------------------
+
+class CompanySummaryResponse(FreshnessMixin):
+    """Aggregated order summary across multiple stores owned by a company."""
+
+    company_id: int
+    store_count: int
+    stores: list[int]
+    order_count: int
+    total_revenue: float
+    avg_order_value: float
+    from_date: datetime
+    to_date: datetime
+
+
+class CompanyTrendResponse(FreshnessMixin):
+    """Aggregated time-series trend across multiple stores owned by a company."""
+
+    company_id: int
+    store_count: int
+    stores: list[int]
+    interval: str
+    data: list[TrendDataPoint]
+
+
+class CompanyTopProductsResponse(FreshnessMixin):
+    """Aggregated top-selling products across all stores owned by a company."""
+
+    company_id: int
+    store_count: int
+    stores: list[int]
+    limit: int
+    data: list[TopProductItem]
+
+
+class CompanyStatusBreakdownResponse(FreshnessMixin):
+    """Aggregated status breakdown across all stores owned by a company."""
+
+    company_id: int
+    store_count: int
+    stores: list[int]
+    data: list[StatusBreakdownItem]
+
+
+# ---------------------------------------------------------------------------
+# Bonus B-4 — Config-Driven Metrics Schemas
+# ---------------------------------------------------------------------------
+
+class CustomMetricConfigItem(BaseModel):
+    """Metadata describing a configured dynamic metric from metrics.yaml."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    name: str
+    title: str
+    description: str
+    unit: str
+
+
+class CustomMetricResponse(FreshnessMixin):
+    """Evaluated result for a dynamic metric defined in config/metrics.yaml."""
+
+    tenant_id: int
+    metric_name: str
+    title: str
+    description: str
+    unit: str
+    value: float
+    from_date: datetime
+    to_date: datetime
+
