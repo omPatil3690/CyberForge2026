@@ -7,3 +7,6 @@ __pycache__/
 system.md
 data
 aggregator.duckdb
+*.duckdb
+*.duckdb.wal
+*.duckdb.tmp

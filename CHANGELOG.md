@@ -324,6 +324,19 @@ All notable changes to the CyberForge2026 Multi-Tenant Aggregation Layer project
   - `aggregator/database/duckdb_store.py`
   - `aggregator/sync/worker.py`
   - `aggregator/api/routers/metrics.py`
+#### Change #015 — Execute 1M Record Benchmark & Persist Output Scorecard
+
+- **Timestamp:** 2026-10-31 19:54:30 IST (UTC+05:30)
+- **Agent/Author:** Antigravity
+- **Type:** Testing
+- **Description:**
+  - Generated and verified 1,000,000 synthetic order records in PostgreSQL and synchronized replica into DuckDB.
+  - Executed full 1M multi-iteration benchmark harness (`scripts/benchmark_1m.py`) across FR-1, FR-2, FR-3, and FR-4 endpoints.
+  - Captured and saved complete benchmark metrics and judge scorecard to `benchmark_1m_results.txt`.
+  - Confirmed all query latencies hit the "Great" performance category (<200ms) with p50 response times ranging from 2.18ms to 4.00ms, achieving up to 63.9x speedup over raw PostgreSQL with 100% numerical correctness.
+- **Affected Files:**
+  - `requirements.txt`
+  - `benchmark_1m_results.txt`
   - `CHANGELOG.md`
 
 ---
@@ -434,6 +447,18 @@ All notable changes to the CyberForge2026 Multi-Tenant Aggregation Layer project
 
 
 
+
+#### Change #016 — Ignore DuckDB Database and Write-Ahead Log Artifacts
+
+- **Timestamp:** 2026-10-31 21:44:00 IST (UTC+05:30)
+- **Agent/Author:** Antigravity
+- **Type:** Configuration
+- **Description:**
+  - Updated `.gitignore` to match all DuckDB storage files (`*.duckdb`, `*.duckdb.wal`, `*.duckdb.tmp`).
+  - Removed `aggregator.duckdb` binary database file from git tracking via `git rm --cached` so generated local analytical replicas are not checked into the repository.
+- **Affected Files:**
+  - `.gitignore`
+  - `CHANGELOG.md`
 
 
 
